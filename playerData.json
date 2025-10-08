@@ -42,8 +42,8 @@
     "summonerName": "https://op.gg/lol/summoners/na/R0meo-USSS",
     "IHP": 1824,
     "roles": [
-      "Mid",
       "Support",
+      "Mid",
       "Jungle",
       "Top",
       "Bot"
@@ -558,69 +558,6 @@
       "Top",
       "Jungle"
     ]
-  },
-  "fake0": {
-    "rank": "Iron",
-    "division": 4,
-    "lp": 0,
-    "wins": 0,
-    "losses": 0
-  },
-  "fake1": {
-    "rank": "Iron",
-    "division": 4,
-    "lp": 0,
-    "wins": 0,
-    "losses": 0
-  },
-  "fake2": {
-    "rank": "Iron",
-    "division": 4,
-    "lp": 0,
-    "wins": 0,
-    "losses": 0
-  },
-  "fake3": {
-    "rank": "Iron",
-    "division": 4,
-    "lp": 0,
-    "wins": 0,
-    "losses": 0
-  },
-  "fake4": {
-    "rank": "Iron",
-    "division": 4,
-    "lp": 0,
-    "wins": 0,
-    "losses": 0
-  },
-  "fake5": {
-    "rank": "Iron",
-    "division": 4,
-    "lp": 0,
-    "wins": 0,
-    "losses": 0
-  },
-  "fake6": {
-    "rank": "Iron",
-    "division": 4,
-    "lp": 0,
-    "wins": 0,
-    "losses": 0
-  },
-  "fake7": {
-    "rank": "Iron",
-    "division": 4,
-    "lp": 0,
-    "wins": 0,
-    "losses": 0
-  },
-  "fake8": {
-    "rank": "Iron",
-    "division": 4,
-    "lp": 0,
-    "wins": 0,
-    "losses": 0
   },
   "172883434379804672": {
     "rank": "Master",

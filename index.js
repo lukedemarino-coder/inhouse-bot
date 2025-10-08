@@ -626,7 +626,9 @@ if (interaction.customId === "join") {
   saveData();
   await updateQueueMessage();
   if (queue.length >= QUEUE_SIZE) await startReadyCheck(interaction.channel);
-  return interaction.deferUpdate();
+    await interaction.deferUpdate().catch(err => {
+    if (err.code !== 10062) console.error("deferUpdate failed:", err);
+  });
 }
 
     // --- Leave Queue ---
