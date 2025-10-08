@@ -1254,8 +1254,15 @@ client.once("ready", async () => {
 
   await postQueueMessage(queueChannel);
 
-  // Call leaderboard properly
-  await updateLeaderboardChannel(guild);
+  // ---------------- Auto-update leaderboard every 10 minutes ----------------
+  setInterval(async () => {
+    try {
+      await updateLeaderboardChannel(guild);
+      console.log("Leaderboard auto-updated.");
+    } catch (err) {
+      console.error("Failed to auto-update leaderboard:", err);
+    }
+  }, 10 * 60 * 1000); // 10 minutes in milliseconds
 });
 
 client.login(process.env.BOT_TOKEN);
