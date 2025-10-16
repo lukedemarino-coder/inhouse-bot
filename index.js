@@ -3,42 +3,6 @@ require("dotenv").config();
 const fs = require("fs");
 const axios = require("axios");
 const cheerio = require("cheerio");
-const express = require('express');
-const app = express();
-const port = process.env.PORT || 3000;
-
-// Simple health check endpoint for UptimeRobot
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK', 
-    message: 'Discord bot is running',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Root endpoint
-app.get('/', (req, res) => {
-  res.status(200).json({
-    status: 'Online',
-    service: 'Discord Bot',
-    guilds: client.guilds.cache.size,
-    uptime: process.uptime()
-  });
-});
-
-// Start the web server
-app.listen(port, '0.0.0.0', () => {
-  console.log(`🟢 Web server running on port ${port}`);
-  console.log(`🔗 Health check available at: http://0.0.0.0:${port}/health`);
-});
-
-// Handle graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  client.destroy();
-  process.exit(0);
-});
-
 const puppeteer = require("puppeteer");
 const {
   Client,
@@ -1399,7 +1363,10 @@ client.on("messageCreate", async (message) => {
     // Don't delete bot messages that are part of ready checks or other important bot messages
     if (message.embeds.length > 0) {
       const embed = message.embeds[0];
-      if (embed.title && (embed.title.includes("Ready Check"))) {
+      if (embed.title && (
+        embed.title.includes("Ready Check") || 
+        embed.title.includes("Current Queue")
+      )) {
         return; // Skip deletion for important bot embeds
       }
     }
@@ -3582,7 +3549,7 @@ async function endMatch(channel, winner, isVoided = false) {
 }
 
 // ---------------- READY ----------------
-const MAIN_GUILD_ID = "1423242905602101310";
+const MAIN_GUILD_ID = "1421221145532956722";
 
 client.once("ready", async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
@@ -3607,6 +3574,45 @@ client.once("ready", async () => {
     queueChannel = await guild.channels.create({ name: "queue", type: 0 });
   }
   await postQueueMessage(queueChannel);
+});
+
+// ---------------- WEB SERVER FOR RENDER ----------------
+const express = require('express');
+const app = express();
+const port = process.env.PORT || 3000;
+
+// Simple health check endpoint for UptimeRobot
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'OK', 
+    message: 'Discord bot is running',
+    timestamp: new Date().toISOString(),
+    guilds: client.guilds?.cache?.size || 0,
+    uptime: process.uptime()
+  });
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.status(200).json({
+    status: 'Online',
+    service: 'Discord Bot',
+    guilds: client.guilds?.cache?.size || 0,
+    uptime: process.uptime()
+  });
+});
+
+// Start the web server
+app.listen(port, '0.0.0.0', () => {
+  console.log(`🟢 Web server running on port ${port}`);
+  console.log(`🔗 Health check available at: http://0.0.0.0:${port}/health`);
+});
+
+// Handle graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  client.destroy();
+  process.exit(0);
 });
 
 client.login(process.env.BOT_TOKEN);
