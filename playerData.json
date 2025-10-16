@@ -2,8 +2,8 @@
   "308442083771809813": {
     "rank": "Gold",
     "division": 4,
-    "lp": 75,
-    "wins": 2,
+    "lp": 95,
+    "wins": 3,
     "losses": 0,
     "summonerName": "https://op.gg/lol/summoners/na/sunshine-bee",
     "IHP": 1235,
@@ -17,27 +17,34 @@
   },
   "557819858193088522": {
     "rank": "Platinum",
-    "division": 1,
-    "lp": 13,
+    "division": 2,
+    "lp": 73,
     "wins": 0,
-    "losses": 0,
+    "losses": 2,
     "summonerName": "https://op.gg/lol/summoners/na/No%20Hwei-green",
-    "IHP": 1913
+    "IHP": 1913,
+    "roles": [
+      "Mid",
+      "Support",
+      "Jungle",
+      "Bot",
+      "Top"
+    ]
   },
   "130912214558310400": {
     "rank": "Emerald",
     "division": 3,
-    "lp": 40,
+    "lp": 60,
     "wins": 0,
-    "losses": 2,
+    "losses": 1,
     "summonerName": "https://op.gg/lol/summoners/na/Promech-NA1",
     "IHP": 2180
   },
   "272603932268822529": {
     "rank": "Platinum",
     "division": 3,
-    "lp": 64,
-    "wins": 2,
+    "lp": 84,
+    "wins": 3,
     "losses": 5,
     "summonerName": "https://op.gg/lol/summoners/na/R0meo-USSS",
     "IHP": 1824,
@@ -52,11 +59,18 @@
   "102337157493985280": {
     "rank": "Platinum",
     "division": 3,
-    "lp": 27,
-    "wins": 0,
+    "lp": 67,
+    "wins": 2,
     "losses": 4,
     "summonerName": "https://op.gg/lol/summoners/na/elfire-ELF",
-    "IHP": 1807
+    "IHP": 1807,
+    "roles": [
+      "Top",
+      "Mid",
+      "Bot",
+      "Jungle",
+      "Support"
+    ]
   },
   "382245131815747585": {
     "rank": "Bronze",
@@ -74,7 +88,14 @@
     "wins": 0,
     "losses": 0,
     "summonerName": "https://op.gg/lol/summoners/na/Geekèé-0001",
-    "IHP": 1511
+    "IHP": 1511,
+    "roles": [
+      "Support",
+      "Jungle",
+      "Bot",
+      "Mid",
+      "Top"
+    ]
   },
   "229133273282904064": {
     "rank": "Diamond",
@@ -112,18 +133,18 @@
   },
   "479460667649294339": {
     "rank": "Emerald",
-    "division": 3,
-    "lp": 67,
-    "wins": 4,
+    "division": 2,
+    "lp": 7,
+    "wins": 6,
     "losses": 1,
     "summonerName": "https://op.gg/lol/summoners/na/MajinHollow-Vayne",
     "IHP": 2127,
     "roles": [
       "Bot",
       "Mid",
+      "Jungle",
       "Fill",
-      "Support",
-      "Top"
+      "Fill"
     ]
   },
   "526829230462468096": {
@@ -156,36 +177,50 @@
   "225418145261813763": {
     "rank": "Grandmaster",
     "division": null,
-    "lp": 544,
-    "wins": 2,
-    "losses": 4,
+    "lp": 644,
+    "wins": 6,
+    "losses": 3,
     "summonerName": "https://op.gg/lol/summoners/na/Alune-WASD",
-    "IHP": 3384
+    "IHP": 3384,
+    "roles": [
+      "Top",
+      "Mid",
+      "Bot",
+      "Support",
+      "Jungle"
+    ]
   },
   "162726987075551232": {
     "rank": "Gold",
     "division": 1,
-    "lp": 97,
-    "wins": 1,
-    "losses": 2,
+    "lp": 93,
+    "wins": 3,
+    "losses": 4,
     "summonerName": "https://op.gg/lol/summoners/na/LegendaryFive-NA1",
     "IHP": 1617,
     "roles": [
       "Fill",
-      null,
-      null,
-      null,
-      null
+      "Fill",
+      "Fill",
+      "Fill",
+      "Fill"
     ]
   },
   "545811535906471946": {
     "rank": "Diamond",
     "division": 1,
     "lp": 55,
-    "wins": 0,
-    "losses": 1,
+    "wins": 1,
+    "losses": 2,
     "summonerName": "https://op.gg/lol/summoners/na/Seijo-meow",
-    "IHP": 2755
+    "IHP": 2755,
+    "roles": [
+      "Support",
+      "Bot",
+      "Jungle",
+      "Mid",
+      "Top"
+    ]
   },
   "242805327144288258": {
     "rank": "Bronze",
@@ -200,10 +235,17 @@
     "rank": "Diamond",
     "division": 4,
     "lp": 53,
-    "wins": 4,
-    "losses": 2,
+    "wins": 7,
+    "losses": 5,
     "summonerName": "https://op.gg/lol/summoners/na/Rambo-1v9",
-    "IHP": 2433
+    "IHP": 2433,
+    "roles": [
+      "Fill",
+      "Fill",
+      "Fill",
+      "Fill",
+      "Fill"
+    ]
   },
   "404297073840619530": {
     "rank": "Gold",
@@ -233,13 +275,20 @@
     "IHP": 2229
   },
   "1264926147880157245": {
-    "rank": "Emerald",
-    "division": 4,
-    "lp": 20,
+    "rank": "Platinum",
+    "division": 1,
+    "lp": 80,
     "wins": 0,
-    "losses": 0,
+    "losses": 2,
     "summonerName": "https://op.gg/lol/summoners/na/Jas-nah",
-    "IHP": 2020
+    "IHP": 2020,
+    "roles": [
+      "Jungle",
+      "Bot",
+      "Mid",
+      "Support",
+      "Top"
+    ]
   },
   "1116104750857990214": {
     "rank": "Diamond",
@@ -262,38 +311,59 @@
   "812809666898952273": {
     "rank": "Emerald",
     "division": 2,
-    "lp": 35,
+    "lp": 55,
     "wins": 0,
-    "losses": 2,
+    "losses": 1,
     "summonerName": "https://op.gg/lol/summoners/na/LuviniaAraxi-NA1",
     "IHP": 2275
   },
   "1334205462626963547": {
-    "rank": "Emerald",
-    "division": 1,
-    "lp": 81,
-    "wins": 3,
-    "losses": 2,
+    "rank": "Diamond",
+    "division": 4,
+    "lp": 1,
+    "wins": 6,
+    "losses": 4,
     "summonerName": "https://op.gg/lol/summoners/na/zJElla-NA1",
-    "IHP": 2361
+    "IHP": 2361,
+    "roles": [
+      "Mid",
+      "Top",
+      "Jungle",
+      "Bot",
+      "Support"
+    ]
   },
   "899989463927779339": {
     "rank": "Platinum",
-    "division": 4,
-    "lp": 88,
-    "wins": 0,
+    "division": 3,
+    "lp": 8,
+    "wins": 1,
     "losses": 2,
     "summonerName": "https://op.gg/lol/summoners/na/Florentiney-NA1",
-    "IHP": 1728
+    "IHP": 1728,
+    "roles": [
+      "Top",
+      "Mid",
+      "Jungle",
+      "Support",
+      "Bot"
+    ]
   },
   "203892173102514176": {
-    "rank": "Diamond",
-    "division": 4,
-    "lp": 17,
-    "wins": 4,
-    "losses": 1,
+    "rank": "Emerald",
+    "division": 1,
+    "lp": 77,
+    "wins": 6,
+    "losses": 5,
     "summonerName": "https://op.gg/lol/summoners/na/CygenMod-NA1",
-    "IHP": 2357
+    "IHP": 2357,
+    "roles": [
+      "Top",
+      "Mid",
+      "Jungle",
+      "Support",
+      "Bot"
+    ]
   },
   "362072645468028938": {
     "rank": "Emerald",
@@ -305,11 +375,11 @@
     "IHP": 2359
   },
   "1389132760429363263": {
-    "rank": "Diamond",
-    "division": 1,
-    "lp": 84,
+    "rank": "Master",
+    "division": null,
+    "lp": 4,
     "wins": 0,
-    "losses": 1,
+    "losses": 0,
     "summonerName": "https://op.gg/lol/summoners/na/Ash-Dust",
     "IHP": 2804
   },
@@ -320,7 +390,14 @@
     "wins": 1,
     "losses": 1,
     "summonerName": "https://op.gg/lol/summoners/na/Reborn-V01",
-    "IHP": 2955
+    "IHP": 2955,
+    "roles": [
+      "Mid",
+      "Bot",
+      "Jungle",
+      "Support",
+      "Top"
+    ]
   },
   "689628591562031144": {
     "rank": "Platinum",
@@ -329,16 +406,23 @@
     "wins": 0,
     "losses": 0,
     "summonerName": "https://op.gg/lol/summoners/na/Haumea-GCS",
-    "IHP": 1879
+    "IHP": 1879,
+    "roles": [
+      "Mid",
+      "Bot",
+      "Top",
+      "Jungle",
+      "Support"
+    ]
   },
   "537025834725146625": {
     "rank": "Diamond",
-    "division": 4,
-    "lp": 56,
-    "wins": 2,
-    "losses": 0,
-    "summonerName": "https://op.gg/lol/summoners/na/Darkflaremage-NA1",
-    "IHP": 2416,
+    "division": 1,
+    "lp": 81,
+    "wins": 4,
+    "losses": 2,
+    "summonerName": "https://op.gg/lol/summoners/na/1st%20meloncloud-NA1",
+    "IHP": 2801,
     "roles": [
       "Mid",
       "Support",
@@ -354,7 +438,14 @@
     "wins": 0,
     "losses": 0,
     "summonerName": "https://op.gg/lol/summoners/na/BioMatrixVT-Yulje",
-    "IHP": 2400
+    "IHP": 2400,
+    "roles": [
+      "Bot",
+      "Mid",
+      "Top",
+      "Jungle",
+      "Support"
+    ]
   },
   "419280408685969408": {
     "rank": "Diamond",
@@ -367,12 +458,19 @@
   },
   "119181793508327428": {
     "rank": "Platinum",
-    "division": 4,
-    "lp": 54,
-    "wins": 3,
-    "losses": 1,
+    "division": 3,
+    "lp": 14,
+    "wins": 6,
+    "losses": 2,
     "summonerName": "https://op.gg/lol/summoners/na/JDW-NA1",
-    "IHP": 1614
+    "IHP": 1614,
+    "roles": [
+      "Support",
+      "Fill",
+      "Fill",
+      "Fill",
+      "Fill"
+    ]
   },
   "186935357588242432": {
     "rank": "Platinum",
@@ -413,11 +511,18 @@
   "166010502382616576": {
     "rank": "Master",
     "division": null,
-    "lp": 1,
-    "wins": 0,
+    "lp": 21,
+    "wins": 1,
     "losses": 0,
     "summonerName": "https://op.gg/lol/summoners/na/Hunterwolfsteel5-NA1",
-    "IHP": 2801
+    "IHP": 2801,
+    "roles": [
+      "Jungle",
+      "Top",
+      "Fill",
+      "Fill",
+      "Fill"
+    ]
   },
   "227233743708880896": {
     "rank": "Emerald",
@@ -431,18 +536,25 @@
   "1106767685066432693": {
     "rank": "Grandmaster",
     "division": null,
-    "lp": 634,
+    "lp": 614,
     "wins": 0,
-    "losses": 0,
+    "losses": 1,
     "summonerName": "https://op.gg/lol/summoners/na/Froyo-0000",
-    "IHP": 3434
+    "IHP": 3434,
+    "roles": [
+      "Fill",
+      "Fill",
+      "Fill",
+      "Fill",
+      "Fill"
+    ]
   },
   "1315381489340518441": {
     "rank": "Platinum",
     "division": 2,
-    "lp": 72,
+    "lp": 52,
     "wins": 0,
-    "losses": 0,
+    "losses": 1,
     "summonerName": "https://op.gg/lol/summoners/na/HISLOTUSBLOSSOM-7272",
     "IHP": 1872,
     "roles": [
@@ -460,7 +572,14 @@
     "wins": 0,
     "losses": 1,
     "summonerName": "https://op.gg/lol/summoners/na/Striker-Sup",
-    "IHP": 3327
+    "IHP": 3327,
+    "roles": [
+      "Support",
+      "Mid",
+      "Jungle",
+      "Bot",
+      "Top"
+    ]
   },
   "383674603496669184": {
     "rank": "Diamond",
@@ -523,7 +642,14 @@
     "wins": 0,
     "losses": 0,
     "summonerName": "https://op.gg/lol/summoners/na/NAQI-GCS",
-    "IHP": 2628
+    "IHP": 2628,
+    "roles": [
+      "Mid",
+      "Bot",
+      "Top",
+      "Support",
+      "Fill"
+    ]
   },
   "320648255367282688": {
     "rank": "Master",
@@ -546,9 +672,9 @@
   "433451450362888202": {
     "rank": "Grandmaster",
     "division": null,
-    "lp": 548,
-    "wins": 4,
-    "losses": 1,
+    "lp": 588,
+    "wins": 7,
+    "losses": 2,
     "summonerName": "https://op.gg/lol/summoners/na/Different-ADC",
     "IHP": 3348,
     "roles": [
@@ -574,5 +700,1036 @@
     ],
     "summonerName": "https://op.gg/lol/summoners/na/EMB%20Majnuu-Viego",
     "IHP": 2990
+  },
+  "223334404301389825": {
+    "rank": "Iron",
+    "division": 4,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Bot",
+      "Support",
+      "Top",
+      "Mid",
+      "Jungle"
+    ]
+  },
+  "125716421941395456": {
+    "rank": "Bronze",
+    "division": 4,
+    "lp": 76,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Support",
+      "Mid",
+      "Top",
+      "Bot",
+      "Jungle"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/Don%20Eduardo-NA1",
+    "IHP": 476
+  },
+  "171478247354138624": {
+    "rank": "Iron",
+    "division": 4,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Mid",
+      "Bot",
+      "Support",
+      "Jungle",
+      "Top"
+    ]
+  },
+  "127886111744720897": {
+    "rank": "Platinum",
+    "division": 4,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Jungle",
+      "Top",
+      "Bot",
+      "Mid",
+      "Support"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/Legasearl-GAPP",
+    "IHP": 1600
+  },
+  "380128821803745281": {
+    "rank": "Diamond",
+    "division": 3,
+    "lp": 86,
+    "wins": 3,
+    "losses": 3,
+    "summonerName": "https://op.gg/lol/summoners/na/pepsi-gulp",
+    "IHP": 2586,
+    "roles": [
+      "Mid",
+      "Jungle",
+      "Support",
+      "Fill",
+      "Fill"
+    ]
+  },
+  "372904134195806209": {
+    "rank": "Gold",
+    "division": 4,
+    "lp": 10,
+    "wins": 1,
+    "losses": 2,
+    "summonerName": "https://op.gg/lol/summoners/na/cheese%20kimbap-eight",
+    "IHP": 1230,
+    "roles": [
+      "Top",
+      "Mid",
+      "Jungle",
+      "Fill",
+      "Fill"
+    ]
+  },
+  "234163892362674178": {
+    "rank": "Diamond",
+    "division": 4,
+    "lp": 54,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/Rex%20dat%20rexy%20rex-NA1",
+    "IHP": 2454
+  },
+  "189422404123099136": {
+    "rank": "Platinum",
+    "division": 3,
+    "lp": 73,
+    "wins": 2,
+    "losses": 0,
+    "roles": [
+      "Mid",
+      "Support",
+      "Top",
+      "Jungle",
+      "Bot"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/HerbieHermit-NA1",
+    "IHP": 1733
+  },
+  "136682114757165056": {
+    "rank": "Emerald",
+    "division": 2,
+    "lp": 75,
+    "wins": 1,
+    "losses": 0,
+    "roles": [
+      "Top",
+      "Bot",
+      "Mid",
+      "Jungle",
+      "Support"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/Circas-1876",
+    "IHP": 2255
+  },
+  "237043686460882945": {
+    "rank": "Diamond",
+    "division": 3,
+    "lp": 72,
+    "wins": 1,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/Icarus-Gragy",
+    "IHP": 2552,
+    "roles": [
+      "Jungle",
+      "Support",
+      "Fill",
+      "Fill",
+      "Fill"
+    ]
+  },
+  "317855431525662730": {
+    "rank": "Diamond",
+    "division": 2,
+    "lp": 88,
+    "wins": 1,
+    "losses": 1,
+    "summonerName": "https://op.gg/lol/summoners/na/ghost%20girl-cry",
+    "IHP": 2688,
+    "roles": [
+      "Mid",
+      "Support",
+      "Bot",
+      "Jungle",
+      "Top"
+    ]
+  },
+  "_bannedUsers": [
+    "599771602993020928",
+    "1381045179724726312"
+  ],
+  "220813102952742912": {
+    "rank": "Emerald",
+    "division": 1,
+    "lp": 38,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/ghost%20boy-baby",
+    "IHP": 2338
+  },
+  "122931756897665024": {
+    "rank": "Emerald",
+    "division": 1,
+    "lp": 50,
+    "wins": 1,
+    "losses": 0,
+    "roles": [
+      "Mid",
+      "Support",
+      "Bot",
+      "Top",
+      "Jungle"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/Pain%20Train%20Shane-NA1",
+    "IHP": 2330
+  },
+  "767860991690014771": {
+    "rank": "Diamond",
+    "division": 1,
+    "lp": 94,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/RebornMountainx-NA1",
+    "IHP": 2794,
+    "roles": [
+      "Jungle",
+      "Fill",
+      "Fill",
+      "Fill",
+      "Fill"
+    ]
+  },
+  "174997245177888768": {
+    "rank": "Emerald",
+    "division": 1,
+    "lp": 75,
+    "wins": 1,
+    "losses": 1,
+    "summonerName": "https://op.gg/lol/summoners/na/ReapersBlade-NA2",
+    "IHP": 2375,
+    "roles": [
+      "Bot",
+      "Mid",
+      "Top",
+      "Support",
+      "Jungle"
+    ]
+  },
+  "_userBlocks": {
+    "433451450362888202": [],
+    "189422404123099136": [],
+    "684552053481406484": [],
+    "537025834725146625": [],
+    "899989463927779339": [],
+    "407361937744330755": [],
+    "294965318273728512": [],
+    "564604842073391135": [],
+    "997814046072000552": [],
+    "599771602993020928": [],
+    "192085237612806144": [],
+    "767860991690014771": [],
+    "557819858193088522": [],
+    "174997245177888768": [],
+    "272603932268822529": [],
+    "372904134195806209": [],
+    "362072645468028938": [],
+    "1389170324641153156": [],
+    "1106767685066432693": [],
+    "479460667649294339": [],
+    "380128821803745281": [],
+    "237043686460882945": [],
+    "689628591562031144": [],
+    "582709008117268486": [],
+    "203892173102514176": [],
+    "162726987075551232": [],
+    "225418145261813763": [],
+    "102337157493985280": [],
+    "143179269739118592": [],
+    "1334205462626963547": [],
+    "206800861014392832": [],
+    "308442083771809813": [],
+    "708492853730607104": [],
+    "122931756897665024": [],
+    "229003879818330112": [],
+    "545811535906471946": [],
+    "1364038072584638495": [],
+    "1264926147880157245": [],
+    "119181793508327428": [],
+    "178508906149052416": [],
+    "1315381489340518441": [],
+    "1146845499127762954": [],
+    "136682114757165056": [],
+    "812940956919005184": [],
+    "317855431525662730": [],
+    "414261164847923201": [],
+    "246839391610339328": [],
+    "144608686000701440": [],
+    "263930634991435776": [],
+    "148103917132185601": [],
+    "166010502382616576": [],
+    "275785959772258305": [],
+    "660261166408400896": [],
+    "188716002253602817": [],
+    "290583987758563328": [],
+    "674748376646025219": [],
+    "1279533858059980844": []
+  },
+  "323566597945950208": {
+    "rank": "Diamond",
+    "division": 4,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/hellopanda55-hello",
+    "IHP": 2400
+  },
+  "294965318273728512": {
+    "rank": "Platinum",
+    "division": 3,
+    "lp": 42,
+    "wins": 3,
+    "losses": 1,
+    "summonerName": "https://op.gg/lol/summoners/na/ARRØGAÑT-ggeZ",
+    "IHP": 1702,
+    "roles": [
+      "Bot",
+      "Top",
+      "Mid",
+      "Support",
+      "Jungle"
+    ]
+  },
+  "564604842073391135": {
+    "rank": "Emerald",
+    "division": 1,
+    "lp": 25,
+    "wins": 4,
+    "losses": 5,
+    "summonerName": "https://op.gg/lol/summoners/na/SilentWraith603-NA1",
+    "IHP": 2345,
+    "roles": [
+      "Jungle",
+      "Mid",
+      "Bot",
+      "Support",
+      "Top"
+    ]
+  },
+  "684552053481406484": {
+    "rank": "Emerald",
+    "division": 2,
+    "lp": 74,
+    "wins": 1,
+    "losses": 2,
+    "summonerName": "https://op.gg/lol/summoners/na/VV0LFEE-NA1",
+    "IHP": 2294,
+    "roles": [
+      "Top",
+      "Jungle",
+      "Bot",
+      "Mid",
+      "Fill"
+    ]
+  },
+  "_timeoutTracking": {
+    "weeklyReset": 1760734794402,
+    "playerTimeouts": {
+      "433451450362888202": {
+        "offenses": 3,
+        "timeoutUntil": 1760251956631
+      },
+      "564604842073391135": {
+        "offenses": 1,
+        "timeoutUntil": 1760250571859
+      },
+      "407361937744330755": {
+        "offenses": 1,
+        "timeoutUntil": 1760247521172
+      },
+      "380128821803745281": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "189422404123099136": {
+        "offenses": 1,
+        "timeoutUntil": 1760250571861
+      },
+      "1264926147880157245": {
+        "offenses": 1,
+        "timeoutUntil": 1760224922097
+      },
+      "178508906149052416": {
+        "offenses": 1,
+        "timeoutUntil": 1760217479650
+      },
+      "1315381489340518441": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "242805327144288258": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "1146845499127762954": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "162726987075551232": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "136682114757165056": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "119181793508327428": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "599771602993020928": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "308442083771809813": {
+        "offenses": 2,
+        "timeoutUntil": 1760250811864
+      },
+      "479460667649294339": {
+        "offenses": 1,
+        "timeoutUntil": 1760247521175
+      },
+      "812940956919005184": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "122931756897665024": {
+        "offenses": 1,
+        "timeoutUntil": 1760224744221
+      },
+      "317855431525662730": {
+        "offenses": 1,
+        "timeoutUntil": 1760250571862
+      },
+      "225418145261813763": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "414261164847923201": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "246839391610339328": {
+        "offenses": 1,
+        "timeoutUntil": 1760227974954
+      },
+      "997814046072000552": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "545811535906471946": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "203892173102514176": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "1334205462626963547": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "229003879818330112": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "537025834725146625": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "144608686000701440": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "263930634991435776": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "148103917132185601": {
+        "offenses": 1,
+        "timeoutUntil": 1760250571865
+      },
+      "166010502382616576": {
+        "offenses": 2,
+        "timeoutUntil": 1760247761175
+      },
+      "1364038072584638495": {
+        "offenses": 1,
+        "timeoutUntil": 1760250571863
+      },
+      "275785959772258305": {
+        "offenses": 1,
+        "timeoutUntil": 1760237694489
+      },
+      "708492853730607104": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "660261166408400896": {
+        "offenses": 2,
+        "timeoutUntil": 1760238013659
+      },
+      "188716002253602817": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "290583987758563328": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "674748376646025219": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      },
+      "1389170324641153156": {
+        "offenses": 1,
+        "timeoutUntil": 1760247521173
+      },
+      "237043686460882945": {
+        "offenses": 1,
+        "timeoutUntil": 1760247521174
+      },
+      "174997245177888768": {
+        "offenses": 1,
+        "timeoutUntil": 1760247521177
+      },
+      "127886111744720897": {
+        "offenses": 1,
+        "timeoutUntil": 1760247521178
+      },
+      "372904134195806209": {
+        "offenses": 1,
+        "timeoutUntil": 1760250571860
+      },
+      "313140851033243648": {
+        "offenses": 1,
+        "timeoutUntil": 1760250571863
+      },
+      "206800861014392832": {
+        "offenses": 1,
+        "timeoutUntil": 1760250571865
+      },
+      "1279533858059980844": {
+        "offenses": 0,
+        "timeoutUntil": 0
+      }
+    }
+  },
+  "997814046072000552": {
+    "rank": "Emerald",
+    "division": 3,
+    "lp": 60,
+    "wins": 6,
+    "losses": 4,
+    "summonerName": "https://op.gg/lol/summoners/na/Zmmmy-NA1",
+    "IHP": 2020,
+    "roles": [
+      "Top",
+      "Mid",
+      "Bot",
+      "Jungle",
+      "Fill"
+    ]
+  },
+  "192085237612806144": {
+    "rank": "Emerald",
+    "division": 2,
+    "lp": 3,
+    "wins": 1,
+    "losses": 0,
+    "roles": [
+      "Bot",
+      "Mid",
+      "Top",
+      "Jungle",
+      "Fill"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/ZOD-LOVE",
+    "IHP": 2183
+  },
+  "599771602993020928": {
+    "rank": "Platinum",
+    "division": 1,
+    "lp": 14,
+    "wins": 5,
+    "losses": 4,
+    "roles": [
+      "Jungle",
+      "Mid",
+      "Top",
+      "Support",
+      "Bot"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/tofff%20the%20tofff-tofff",
+    "IHP": 1894
+  },
+  "655578171294613505": {
+    "rank": "Emerald",
+    "division": 3,
+    "lp": 63,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/Kale-Zero",
+    "IHP": 2163
+  },
+  "206800861014392832": {
+    "rank": "Emerald",
+    "division": 4,
+    "lp": 39,
+    "wins": 1,
+    "losses": 0,
+    "summonerName": "https://op.gg/pt/lol/summoners/na/SammYm-MARD",
+    "IHP": 2019,
+    "roles": [
+      "Fill",
+      "Fill",
+      "Fill",
+      "Fill",
+      "Fill"
+    ]
+  },
+  "708492853730607104": {
+    "rank": "Emerald",
+    "division": 2,
+    "lp": 81,
+    "wins": 0,
+    "losses": 1,
+    "summonerName": "https://op.gg/lol/summoners/na/K1llum-NA1",
+    "IHP": 2301,
+    "roles": [
+      "Mid",
+      "Support",
+      "Top",
+      "Jungle",
+      "Bot"
+    ]
+  },
+  "229003879818330112": {
+    "rank": "Diamond",
+    "division": 2,
+    "lp": 18,
+    "wins": 0,
+    "losses": 1,
+    "summonerName": "https://op.gg/lol/summoners/na/10c-001",
+    "IHP": 2638,
+    "roles": [
+      "Mid",
+      "Jungle",
+      "Top",
+      "Bot",
+      "Fill"
+    ]
+  },
+  "1364038072584638495": {
+    "rank": "Bronze",
+    "division": 3,
+    "lp": 42,
+    "wins": 2,
+    "losses": 2,
+    "summonerName": "https://op.gg/lol/summoners/na/真の王-NAX",
+    "IHP": 542,
+    "roles": [
+      "Mid",
+      "Bot",
+      "Top",
+      "Support",
+      "Jungle"
+    ]
+  },
+  "230857836081446913": {
+    "rank": "Gold",
+    "division": 3,
+    "lp": 14,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/DerrpX-NA1",
+    "IHP": 1314
+  },
+  "178508906149052416": {
+    "rank": "Platinum",
+    "division": 4,
+    "lp": 12,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Support",
+      "Jungle",
+      "Bot",
+      "Top",
+      "Mid"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/BanditBadger69-NA2",
+    "IHP": 1612
+  },
+  "753349945393938552": {
+    "rank": "Iron",
+    "division": 4,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Bot",
+      "Jungle",
+      "Mid",
+      "Support",
+      "Top"
+    ]
+  },
+  "1146845499127762954": {
+    "rank": "Master",
+    "division": null,
+    "lp": 107,
+    "wins": 0,
+    "losses": 1,
+    "summonerName": "https://op.gg/lol/summoners/na/%E7%99%BC%E6%83%85boybreeding-Cwute",
+    "IHP": 2927,
+    "roles": [
+      "Top",
+      "Jungle",
+      "Bot",
+      "Mid",
+      "Fill"
+    ]
+  },
+  "144608686000701440": {
+    "rank": "Diamond",
+    "division": 3,
+    "lp": 35,
+    "wins": 1,
+    "losses": 1,
+    "summonerName": "https://op.gg/lol/summoners/na/Spartan%2087-087",
+    "IHP": 2535,
+    "roles": [
+      "Mid",
+      "Top",
+      "Bot",
+      "Support",
+      "Jungle"
+    ]
+  },
+  "313140851033243648": {
+    "rank": "Emerald",
+    "division": 1,
+    "lp": 75,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Support",
+      "Mid",
+      "Bot",
+      "Jungle",
+      "Top"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/Death-March",
+    "IHP": 2375
+  },
+  "414261164847923201": {
+    "rank": "Emerald",
+    "division": 3,
+    "lp": 10,
+    "wins": 2,
+    "losses": 1,
+    "roles": [
+      "Jungle",
+      "Top",
+      "Mid",
+      "Bot",
+      "Support"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/JustYikeThings-NA1",
+    "IHP": 2090
+  },
+  "246839391610339328": {
+    "rank": "Diamond",
+    "division": 3,
+    "lp": 12,
+    "wins": 1,
+    "losses": 1,
+    "summonerName": "https://op.gg/lol/summoners/na/Drysicle-YTcom",
+    "IHP": 2512,
+    "roles": [
+      "Top",
+      "Mid",
+      "Bot",
+      "Support",
+      "Jungle"
+    ]
+  },
+  "821780620556107876": {
+    "rank": "Iron",
+    "division": 4,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Mid",
+      "Top",
+      "Bot",
+      "Jungle",
+      "Support"
+    ]
+  },
+  "134173487152496640": {
+    "rank": "Emerald",
+    "division": 4,
+    "lp": 31,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Bot",
+      "Support",
+      "Top",
+      "Mid",
+      "Jungle"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/Stran-NA1",
+    "IHP": 2031
+  },
+  "173890357841494016": {
+    "rank": "Diamond",
+    "division": 1,
+    "lp": 48,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/search?q=mit%23yasuo&region=na",
+    "IHP": 2748,
+    "roles": [
+      "Mid",
+      "Bot",
+      "Top",
+      "Jungle",
+      "Fill"
+    ]
+  },
+  "263930634991435776": {
+    "rank": "Diamond",
+    "division": 4,
+    "lp": 25,
+    "wins": 0,
+    "losses": 2,
+    "roles": [
+      "Top",
+      "Mid",
+      "Bot",
+      "Support",
+      "Jungle"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/Xenux-GCS",
+    "IHP": 2465
+  },
+  "148103917132185601": {
+    "rank": "Master",
+    "division": null,
+    "lp": 230,
+    "wins": 1,
+    "losses": 1,
+    "roles": [
+      "Jungle",
+      "Bot",
+      "Fill",
+      "Fill",
+      "Fill"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/m0Rn-TUFTS",
+    "IHP": 3030
+  },
+  "275785959772258305": {
+    "rank": "Master",
+    "division": null,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/Frosty-0802",
+    "IHP": 2800,
+    "roles": [
+      "Top",
+      "Mid",
+      "Bot",
+      "Jungle",
+      "Support"
+    ]
+  },
+  "660261166408400896": {
+    "rank": "Platinum",
+    "division": 4,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Support",
+      "Mid",
+      "Top",
+      "Jungle",
+      "Bot"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/princess-lust",
+    "IHP": 1600
+  },
+  "163523941904809985": {
+    "rank": "Iron",
+    "division": 4,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0
+  },
+  "188716002253602817": {
+    "rank": "Iron",
+    "division": 4,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0
+  },
+  "290583987758563328": {
+    "rank": "Diamond",
+    "division": 3,
+    "lp": 31,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/Brylle-NA1",
+    "IHP": 2531
+  },
+  "674748376646025219": {
+    "rank": "Diamond",
+    "division": 2,
+    "lp": 98,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/da/lol/summoners/na/Aryken-NA1",
+    "IHP": 2698
+  },
+  "279028693094105088": {
+    "rank": "Gold",
+    "division": 4,
+    "lp": 51,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/VKBandz-VBC",
+    "IHP": 1251
+  },
+  "153089717225783296": {
+    "rank": "Master",
+    "division": null,
+    "lp": 133,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Jungle",
+      null,
+      null,
+      null,
+      null
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/hackzorzzzz-NA1",
+    "IHP": 2933
+  },
+  "109068546062983168": {
+    "rank": "Gold",
+    "division": 4,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://www.op.gg/summoners/na/pandaleon-slay",
+    "IHP": 1200
+  },
+  "401534600741912576": {
+    "rank": "Silver",
+    "division": 4,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/gilly-Tuah",
+    "IHP": 800
+  },
+  "295636497003053057": {
+    "rank": "Master",
+    "division": null,
+    "lp": 4,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/eeleeyas-isold",
+    "IHP": 2804
+  },
+  "193473568762363904": {
+    "rank": "Diamond",
+    "division": 2,
+    "lp": 8,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/Levi-NA111",
+    "IHP": 2608
+  },
+  "1279533858059980844": {
+    "rank": "Bronze",
+    "division": 2,
+    "lp": 68,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Bot",
+      "Mid",
+      "Support",
+      "Jungle",
+      "Top"
+    ],
+    "summonerName": "https://op.gg/lol/summoners/na/123-vape",
+    "IHP": 668
+  },
+  "442055767328292866": {
+    "rank": "Emerald",
+    "division": 3,
+    "lp": 14,
+    "wins": 0,
+    "losses": 0,
+    "summonerName": "https://op.gg/lol/summoners/na/BronzeCena-Blind",
+    "IHP": 2114
+  },
+  "949825319148322847": {
+    "rank": "Iron",
+    "division": 4,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Top",
+      "Mid",
+      "Bot",
+      "Support",
+      "Jungle"
+    ]
+  },
+  "150061163311267850": {
+    "rank": "Iron",
+    "division": 4,
+    "lp": 0,
+    "wins": 0,
+    "losses": 0,
+    "roles": [
+      "Mid",
+      "Top",
+      "Bot",
+      "Jungle",
+      "Support"
+    ]
   }
 }
