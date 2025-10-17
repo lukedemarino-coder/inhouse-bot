@@ -193,15 +193,41 @@ function getNextMatchId() {
 }
 
 // Add this function to load/save match history
-function loadMatchHistory() {
-  if (fs.existsSync(MATCH_HISTORY_FILE)) {
-    return JSON.parse(fs.readFileSync(MATCH_HISTORY_FILE));
-  }
-  return [];
+async function loadMatchHistory() {
+    if (matchHistoryCollection) {
+        try {
+            const history = await matchHistoryCollection.find({}).sort({ timestamp: 1 }).toArray();
+            console.log(`📥 Loaded ${history.length} matches from MongoDB`);
+            return history;
+        } catch (error) {
+            console.error('Error loading match history from MongoDB:', error);
+        }
+    }
+    
+    // Fallback to file
+    if (fs.existsSync(MATCH_HISTORY_FILE)) {
+        return JSON.parse(fs.readFileSync(MATCH_HISTORY_FILE));
+    }
+    return [];
 }
 
-function saveMatchHistory(history) {
-  fs.writeFileSync(MATCH_HISTORY_FILE, JSON.stringify(history, null, 2));
+async function saveMatchHistory(history) {
+    if (matchHistoryCollection) {
+        try {
+            // Clear and rebuild collection
+            await matchHistoryCollection.deleteMany({});
+            if (history.length > 0) {
+                await matchHistoryCollection.insertMany(history);
+            }
+            console.log(`💾 Saved ${history.length} matches to MongoDB`);
+            return;
+        } catch (error) {
+            console.error('Error saving match history to MongoDB:', error);
+        }
+    }
+    
+    // Fallback to file
+    fs.writeFileSync(MATCH_HISTORY_FILE, JSON.stringify(history, null, 2));
 }
 
 // ---------------- RANK SYSTEM ----------------
@@ -3286,8 +3312,8 @@ async function makeTeams(channel) {
   const guild = channel.guild;
   
   // Generate sequential match ID
-  function getNextMatchId() {
-    const matchHistory = loadMatchHistory();
+  async function getNextMatchId() {
+    const matchHistory = await loadMatchHistory();
     
     // If no matches exist, start from 1
     if (matchHistory.length === 0) {
@@ -3304,44 +3330,7 @@ async function makeTeams(channel) {
     return (maxId + 1).toString();
   }
 
-  async function loadMatchHistory() {
-    if (matchHistoryCollection) {
-        try {
-            const history = await matchHistoryCollection.find({}).sort({ timestamp: 1 }).toArray();
-            console.log(`📥 Loaded ${history.length} matches from MongoDB`);
-            return history;
-        } catch (error) {
-            console.error('Error loading match history from MongoDB:', error);
-        }
-    }
-    
-    // Fallback to file
-    if (fs.existsSync(MATCH_HISTORY_FILE)) {
-        return JSON.parse(fs.readFileSync(MATCH_HISTORY_FILE));
-    }
-    return [];
-}
-
-async function saveMatchHistory(history) {
-    if (matchHistoryCollection) {
-        try {
-            // Clear and rebuild collection
-            await matchHistoryCollection.deleteMany({});
-            if (history.length > 0) {
-                await matchHistoryCollection.insertMany(history);
-            }
-            console.log(`💾 Saved ${history.length} matches to MongoDB`);
-            return;
-        } catch (error) {
-            console.error('Error saving match history to MongoDB:', error);
-        }
-    }
-    
-    // Fallback to file
-    fs.writeFileSync(MATCH_HISTORY_FILE, JSON.stringify(history, null, 2));
-}
-
-  const matchId = getNextMatchId();
+  const matchId = await getNextMatchId();
   const matchCategoryName = `Match ${matchId}`; // Simpler name without timestamp
   
   // Create a dedicated category for this match
@@ -3571,6 +3560,7 @@ async function saveMatchHistory(history) {
   updateQueueMessage();
 }
 
+
 // ---------------- END MATCH ----------------
 async function endMatch(channel, winner, isVoided = false) {
   // Get the match for this specific channel
@@ -3682,7 +3672,7 @@ async function endMatch(channel, winner, isVoided = false) {
     }
   });
 
-  const matchHistory = loadMatchHistory();
+  const matchHistory = await loadMatchHistory();
   const matchRecord = {
     id: matchId, // Use the sequential ID instead of channel ID
     timestamp: Date.now(),
@@ -3700,7 +3690,7 @@ async function endMatch(channel, winner, isVoided = false) {
   };
   
   matchHistory.push(matchRecord);
-  saveMatchHistory(matchHistory);
+  await saveMatchHistory(matchHistory);
 
   saveData();
 
