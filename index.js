@@ -3368,23 +3368,38 @@ async function makeTeams(channel) {
   // ---------------- CREATE SEPARATE MATCH CATEGORY FOR EACH MATCH ----------------
   const guild = channel.guild;
   
-  // Generate sequential match ID
+  // Add a lock for match ID generation
+  let matchIdLock = false;
+
   async function getNextMatchId() {
-    const matchHistory = await loadMatchHistory();
-    
-    // If no matches exist, start from 1
-    if (matchHistory.length === 0) {
-      return "1";
+    // Wait for lock if another match is being created
+    while (matchIdLock) {
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
     
-    // Find the highest existing match ID and increment
-    const maxId = Math.max(...matchHistory.map(match => {
-      // Handle both string and number IDs
-      const id = match.id;
-      return typeof id === 'string' ? parseInt(id) || 0 : id;
-    }).filter(id => !isNaN(id)));
-    
-    return (maxId + 1).toString();
+    try {
+      matchIdLock = true;
+      
+      const matchHistory = await loadMatchHistory();
+      
+      // If no matches exist, start from 1
+      if (matchHistory.length === 0) {
+        return "1";
+      }
+      
+      // Find the highest existing match ID and increment
+      const maxId = Math.max(...matchHistory.map(match => {
+        // Handle both string and number IDs
+        const id = match.id;
+        return typeof id === 'string' ? parseInt(id) || 0 : id;
+      }).filter(id => !isNaN(id)));
+      
+      return (maxId + 1).toString();
+      
+    } finally {
+      // Always release the lock
+      matchIdLock = false;
+    }
   }
 
   const matchId = await getNextMatchId();
