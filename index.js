@@ -854,44 +854,66 @@ async function postRoleSelectionMessage(channel) {
 async function createDraftLolLobby() {  
   let browser;
   try {
+    // Enhanced configuration for Render
     browser = await puppeteer.launch({ 
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'] // Better stability
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process',
+        '--no-zygote'
+      ]
     });
+    
     const page = await browser.newPage();
-    await page.goto("https://draftlol.dawe.gg/", { waitUntil: 'networkidle0' });
+    
+    // Set longer timeouts for Render
+    await page.setDefaultNavigationTimeout(30000);
+    await page.setDefaultTimeout(10000);
+    
+    await page.goto("https://draftlol.dawe.gg/", { 
+      waitUntil: 'networkidle0',
+      timeout: 30000 
+    });
 
-  // Click "Create Lobby"
-  await page.waitForSelector("div.sendButton");
-  await page.click("div.sendButton");
-  // Wait for blue and red inputs
-  await page.waitForSelector(".createContainer input.inputBlue");
-  await page.waitForSelector(".createContainer input.inputRed");
-  // Wait for spectator input (any input that is not blue or red)
-  await page.waitForFunction(() => {
-    const container = document.querySelector(".createContainer");
-    if (!container) return false;
-    const inputs = Array.from(container.querySelectorAll("input[type=text]"));
-    return inputs.some((input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed"));
-  });
-  // Grab all three links
-  const links = await page.evaluate(() => {
-    const container = document.querySelector(".createContainer");
-    if (!container) return { blue: "", red: "", spectator: "" };
-    const blue = container.querySelector(".inputBlue")?.value || "";
-    const red = container.querySelector(".inputRed")?.value || "";
-    const inputs = Array.from(container.querySelectorAll("input[type=text]"));
-    const spectatorInput = inputs.find(
-      (input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed")
-    );
-    const spectator = spectatorInput?.value || "";
-    return { blue, red, spectator };
-  });
+    // Click "Create Lobby"
+    await page.waitForSelector("div.sendButton", { timeout: 10000 });
+    await page.click("div.sendButton");
+    
+    // Wait for blue and red inputs
+    await page.waitForSelector(".createContainer input.inputBlue", { timeout: 10000 });
+    await page.waitForSelector(".createContainer input.inputRed", { timeout: 10000 });
+    
+    // Wait for spectator input
+    await page.waitForFunction(() => {
+      const container = document.querySelector(".createContainer");
+      if (!container) return false;
+      const inputs = Array.from(container.querySelectorAll("input[type=text]"));
+      return inputs.some((input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed"));
+    }, { timeout: 10000 });
+    
+    // Grab all three links
+    const links = await page.evaluate(() => {
+      const container = document.querySelector(".createContainer");
+      if (!container) return { blue: "", red: "", spectator: "" };
+      const blue = container.querySelector(".inputBlue")?.value || "";
+      const red = container.querySelector(".inputRed")?.value || "";
+      const inputs = Array.from(container.querySelectorAll("input[type=text]"));
+      const spectatorInput = inputs.find(
+        (input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed")
+      );
+      const spectator = spectatorInput?.value || "";
+      return { blue, red, spectator };
+    });
 
-  return links;
+    return links;
 
   } catch (error) {
     console.error('Draft lobby creation failed:', error);
+    // Return fallback links or empty strings
     return { blue: "", red: "", spectator: "" };
   } finally {
     if (browser) {
