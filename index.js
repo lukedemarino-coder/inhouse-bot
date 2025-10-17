@@ -26,7 +26,25 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
+// ---------------- MONGODB SETUP ----------------
+const { MongoClient } = require('mongodb');
 
+let db, playerDataCollection, matchHistoryCollection;
+
+async function connectDB() {
+    try {
+        console.log('🔗 Connecting to MongoDB...');
+        const client = new MongoClient(process.env.MONGODB_URI);
+        await client.connect();
+        db = client.db('discord-bot');
+        playerDataCollection = db.collection('playerData');
+        matchHistoryCollection = db.collection('matchHistory');
+        console.log('✅ Connected to MongoDB successfully!');
+    } catch (error) {
+        console.error('❌ MongoDB connection failed:', error);
+        console.log('⚠️  Falling back to local file storage');
+    }
+}
 
 // ---------------- CONFIG ----------------
 const DATA_FILE = "playerData.json";
@@ -116,7 +134,7 @@ function checkWeeklyReset(timeoutTracking) {
   }
 }
 
-let playerData = loadData();
+let playerData = {};
 
 function ensurePlayer(id) {
   if (!playerData[id]) {
@@ -174,16 +192,41 @@ function getNextMatchId() {
   return (matchHistory.length + 1).toString();
 }
 
-// Add this function to load/save match history
-function loadMatchHistory() {
-  if (fs.existsSync(MATCH_HISTORY_FILE)) {
-    return JSON.parse(fs.readFileSync(MATCH_HISTORY_FILE));
-  }
-  return [];
+async function loadMatchHistory() {
+    if (matchHistoryCollection) {
+        try {
+            const history = await matchHistoryCollection.find({}).sort({ timestamp: 1 }).toArray();
+            console.log(`📥 Loaded ${history.length} matches from MongoDB`);
+            return history;
+        } catch (error) {
+            console.error('Error loading match history from MongoDB:', error);
+        }
+    }
+    
+    // Fallback to file
+    if (fs.existsSync(MATCH_HISTORY_FILE)) {
+        return JSON.parse(fs.readFileSync(MATCH_HISTORY_FILE));
+    }
+    return [];
 }
 
-function saveMatchHistory(history) {
-  fs.writeFileSync(MATCH_HISTORY_FILE, JSON.stringify(history, null, 2));
+async function saveMatchHistory(history) {
+    if (matchHistoryCollection) {
+        try {
+            // Clear and rebuild collection
+            await matchHistoryCollection.deleteMany({});
+            if (history.length > 0) {
+                await matchHistoryCollection.insertMany(history);
+            }
+            console.log(`💾 Saved ${history.length} matches to MongoDB`);
+            return;
+        } catch (error) {
+            console.error('Error saving match history to MongoDB:', error);
+        }
+    }
+    
+    // Fallback to file
+    fs.writeFileSync(MATCH_HISTORY_FILE, JSON.stringify(history, null, 2));
 }
 
 // ---------------- RANK SYSTEM ----------------
@@ -231,91 +274,88 @@ function IHPToRank(IHP) {
   return { rank: tier, division, lp };
 }
 
-function loadData() {
-  if (fs.existsSync(DATA_FILE)) {
-    const data = JSON.parse(fs.readFileSync(DATA_FILE));
-    bannedUsers = new Set(data._bannedUsers || []);
-    
-    // Load user blocks
-    if (data._userBlocks) {
-      userBlocks = new Map(Object.entries(data._userBlocks).map(([k, v]) => [k, new Set(v)]));
+// ---------------- DATA FUNCTIONS ----------------
+async function loadData() {
+    // If MongoDB is connected, use it
+    if (playerDataCollection) {
+        try {
+            const data = await playerDataCollection.findOne({ _id: 'main' });
+            if (data) {
+                console.log('📥 Loaded data from MongoDB');
+                
+                // Convert arrays back to Sets
+                if (data._bannedUsers) bannedUsers = new Set(data._bannedUsers);
+                if (data._userBlocks) {
+                    userBlocks = new Map(Object.entries(data._userBlocks).map(([k, v]) => [k, new Set(v)]));
+                }
+                
+                return data;
+            }
+        } catch (error) {
+            console.error('Error loading from MongoDB:', error);
+        }
     }
     
-    // Initialize timeout tracking if it doesn't exist
-    if (!data._timeoutTracking) {
-      data._timeoutTracking = {
-        weeklyReset: Date.now() + WEEKLY_RESET_MS,
-        playerTimeouts: {}
-      };
+    // Fallback to file system
+    if (fs.existsSync(DATA_FILE)) {
+        console.log('📥 Loaded data from local file');
+        const data = JSON.parse(fs.readFileSync(DATA_FILE));
+        bannedUsers = new Set(data._bannedUsers || []);
+        return data;
     }
     
-    // FIX: More robust smurf refund tracking initialization
-    if (!data._smurfRefunds) {
-      data._smurfRefunds = {
-        processedMatches: new Set(),
-        processedSmurfs: new Set(),
-        refundHistory: {}
-      };
-    } else {
-      // Convert arrays back to Sets if they exist
-      if (data._smurfRefunds.processedMatches && Array.isArray(data._smurfRefunds.processedMatches)) {
-        data._smurfRefunds.processedMatches = new Set(data._smurfRefunds.processedMatches);
-      } else if (!data._smurfRefunds.processedMatches) {
-        data._smurfRefunds.processedMatches = new Set();
-      }
-      
-      if (data._smurfRefunds.processedSmurfs && Array.isArray(data._smurfRefunds.processedSmurfs)) {
-        data._smurfRefunds.processedSmurfs = new Set(data._smurfRefunds.processedSmurfs);
-      } else if (!data._smurfRefunds.processedSmurfs) {
-        data._smurfRefunds.processedSmurfs = new Set();
-      }
-      
-      // Ensure refundHistory exists
-      if (!data._smurfRefunds.refundHistory) {
-        data._smurfRefunds.refundHistory = {};
-      }
-    }
-    
-    // Check if weekly reset is needed
-    checkWeeklyReset(data._timeoutTracking);
-    
-    return data;
-  }
-  
-  // FIX: Enhanced default data structure
-  return {
-    _timeoutTracking: {
-      weeklyReset: Date.now() + WEEKLY_RESET_MS,
-      playerTimeouts: {}
-    },
-    _smurfRefunds: {
-      processedMatches: new Set(),
-      processedSmurfs: new Set(),
-      refundHistory: {}
-    }
-  };
+    console.log('🆕 Starting with fresh data');
+    return {
+        _timeoutTracking: {
+            weeklyReset: Date.now() + WEEKLY_RESET_MS,
+            playerTimeouts: {}
+        },
+        _smurfRefunds: {
+            processedMatches: new Set(),
+            processedSmurfs: new Set(),
+            refundHistory: {}
+        }
+    };
 }
 
-function saveData() {
-  // Debounce save operations
-  if (saveDataTimeout) {
-    clearTimeout(saveDataTimeout);
-  }
+async function saveData() {
+    // Debounce save operations
+    if (saveDataTimeout) {
+        clearTimeout(saveDataTimeout);
+    }
 
-  saveDataTimeout = setTimeout(() => {
-    const dataToSave = { 
-      ...playerData, 
-      _bannedUsers: Array.from(bannedUsers),
-      _timeoutTracking: playerData._timeoutTracking,
-      _userBlocks: Object.fromEntries(Array.from(userBlocks.entries()).map(([k, v]) => [k, Array.from(v)])),
-      _smurfRefunds: {
-        processedMatches: Array.from(playerData._smurfRefunds?.processedMatches || new Set()),
-        processedSmurfs: Array.from(playerData._smurfRefunds?.processedSmurfs || new Set()),
-        refundHistory: playerData._smurfRefunds?.refundHistory || {}
-      }
-    };
-    fs.writeFileSync(DATA_FILE, JSON.stringify(dataToSave, null, 2));
-  }, 1000); // Batch saves within 1 second
+    saveDataTimeout = setTimeout(async () => {
+        const dataToSave = { 
+            ...playerData, 
+            _bannedUsers: Array.from(bannedUsers),
+            _timeoutTracking: playerData._timeoutTracking,
+            _userBlocks: Object.fromEntries(Array.from(userBlocks.entries()).map(([k, v]) => [k, Array.from(v)])),
+            _smurfRefunds: {
+                processedMatches: Array.from(playerData._smurfRefunds?.processedMatches || new Set()),
+                processedSmurfs: Array.from(playerData._smurfRefunds?.processedSmurfs || new Set()),
+                refundHistory: playerData._smurfRefunds?.refundHistory || {}
+            }
+        };
+
+        // Try MongoDB first
+        if (playerDataCollection) {
+            try {
+                await playerDataCollection.updateOne(
+                    { _id: 'main' },
+                    { $set: dataToSave },
+                    { upsert: true }
+                );
+                console.log('💾 Saved to MongoDB');
+                return;
+            } catch (error) {
+                console.error('Error saving to MongoDB:', error);
+            }
+        }
+        
+        // Fallback to file
+        fs.writeFileSync(DATA_FILE, JSON.stringify(dataToSave, null, 2));
+        console.log('💾 Saved to local file');
+    }, 1000);
 }
 
 setInterval(() => { requestCount = 0; }, 1000); // Reset every second
@@ -3089,26 +3129,39 @@ async function makeTeams(channel) {
   // ---------------- CREATE SEPARATE MATCH CATEGORY FOR EACH MATCH ----------------
   const guild = channel.guild;
   
-  // Generate sequential match ID
-  function getNextMatchId() {
-    const matchHistory = loadMatchHistory();
+  async function getNextMatchId() {
+    const matchHistory = await loadMatchHistory();
     
     // If no matches exist, start from 1
     if (matchHistory.length === 0) {
       return "1";
     }
     
-    // Find the highest existing match ID and increment
-    const maxId = Math.max(...matchHistory.map(match => {
-      // Handle both string and number IDs
-      const id = match.id;
-      return typeof id === 'string' ? parseInt(id) || 0 : id;
-    }).filter(id => !isNaN(id)));
+    // Extract all numeric IDs and find the maximum
+    const numericIds = matchHistory
+      .map(match => {
+        // Convert string IDs to numbers, ignore non-numeric
+        const id = match.id;
+        if (typeof id === 'number') return id;
+        if (typeof id === 'string') {
+          const num = parseInt(id);
+          return isNaN(num) ? 0 : num;
+        }
+        return 0;
+      })
+      .filter(id => id > 0); // Only positive numbers
     
-    return (maxId + 1).toString();
+    // If we found valid numeric IDs, use the max + 1
+    if (numericIds.length > 0) {
+      const maxId = Math.max(...numericIds);
+      return (maxId + 1).toString();
+    }
+    
+    // Fallback: start from current count + 1
+    return (matchHistory.length + 1).toString();
   }
 
-  const matchId = getNextMatchId();
+  const matchId = await getNextMatchId();
   const matchCategoryName = `Match ${matchId}`; // Simpler name without timestamp
   
   // Create a dedicated category for this match
@@ -3553,6 +3606,13 @@ const MAIN_GUILD_ID = "1423242905602101310";
 
 client.once("ready", async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
+  
+  // Connect to MongoDB first
+  await connectDB();
+  
+  // Load data from MongoDB/file
+  playerData = await loadData();
+  
   const guild = client.guilds.cache.get(MAIN_GUILD_ID);
   if (!guild) {
     console.log("Bot is not in the main server!");
@@ -3574,6 +3634,8 @@ client.once("ready", async () => {
     queueChannel = await guild.channels.create({ name: "queue", type: 0 });
   }
   await postQueueMessage(queueChannel);
+  
+  console.log('✅ Bot fully initialized with data loaded');
 });
 
 // ---------------- WEB SERVER FOR RENDER ----------------
