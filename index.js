@@ -1,20 +1,4 @@
 // index.js
-// Force TLS 1.2 for MongoDB connection
-const tls = require('tls');
-const origCreateSecureContext = tls.createSecureContext;
-
-tls.createSecureContext = (options) => {
-    const context = origCreateSecureContext(options);
-    
-    // Set TLS protocol version
-    if (context.context) {
-        context.context.setMaxProtoVersion('TLSv1.3');
-        context.context.setMinProtoVersion('TLSv1.2');
-    }
-    
-    return context;
-};
-
 require("dotenv").config();
 const fs = require("fs");
 const axios = require("axios");
@@ -50,24 +34,8 @@ let db, playerDataCollection, matchHistoryCollection;
 async function connectDB() {
     try {
         console.log('🔗 Connecting to MongoDB...');
-        
-        const client = new MongoClient(process.env.MONGODB_URI, {
-            tls: true,
-            tlsAllowInvalidCertificates: false,
-            tlsInsecure: false,
-            retryWrites: true,
-            w: 'majority',
-            serverSelectionTimeoutMS: 5000,
-            socketTimeoutMS: 45000,
-            maxPoolSize: 10,
-            minPoolSize: 1
-        });
-        
+        const client = new MongoClient(process.env.MONGODB_URI);
         await client.connect();
-        
-        // Test the connection
-        await client.db().admin().ping();
-        
         db = client.db('discord-bot');
         playerDataCollection = db.collection('playerData');
         matchHistoryCollection = db.collection('matchHistory');
