@@ -34,7 +34,12 @@ let db, playerDataCollection, matchHistoryCollection;
 async function connectDB() {
     try {
         console.log('🔗 Connecting to MongoDB...');
-        const client = new MongoClient(process.env.MONGODB_URI);
+        const client = new MongoClient(process.env.MONGODB_URI, {
+            tls: true,
+            tlsAllowInvalidCertificates: false,
+            retryWrites: true,
+            w: 'majority'
+        });
         await client.connect();
         db = client.db('discord-bot');
         playerDataCollection = db.collection('playerData');
