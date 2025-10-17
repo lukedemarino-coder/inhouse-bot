@@ -1,4 +1,20 @@
 // index.js
+// Force TLS 1.2 for MongoDB connection
+const tls = require('tls');
+const origCreateSecureContext = tls.createSecureContext;
+
+tls.createSecureContext = (options) => {
+    const context = origCreateSecureContext(options);
+    
+    // Set TLS protocol version
+    if (context.context) {
+        context.context.setMaxProtoVersion('TLSv1.3');
+        context.context.setMinProtoVersion('TLSv1.2');
+    }
+    
+    return context;
+};
+
 require("dotenv").config();
 const fs = require("fs");
 const axios = require("axios");
