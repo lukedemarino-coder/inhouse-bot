@@ -854,10 +854,12 @@ async function postRoleSelectionMessage(channel) {
 async function createDraftLolLobby() {  
   let browser;
   try {
-    // Enhanced configuration for Render
-    browser = await puppeteer.launch({ 
+    // Use puppeteer-core with system Chrome
+    const puppeteer = require('puppeteer-core');
+    
+    // Configuration for Render environment
+    const browserConfig = {
       headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -866,36 +868,70 @@ async function createDraftLolLobby() {
         '--single-process',
         '--no-zygote'
       ]
-    });
+    };
+
+    // Try different possible Chrome locations
+    const possibleChromePaths = [
+      process.env.PUPPETEER_EXECUTABLE_PATH,
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/chromium',
+      '/snap/bin/chromium'
+    ];
+
+    // Find available Chrome executable
+    for (const chromePath of possibleChromePaths) {
+      if (chromePath) {
+        try {
+          const fs = require('fs');
+          if (fs.existsSync(chromePath)) {
+            browserConfig.executablePath = chromePath;
+            console.log(`✅ Found Chrome at: ${chromePath}`);
+            break;
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+    }
+
+    if (!browserConfig.executablePath) {
+      console.log('❌ No Chrome executable found, using fallback method');
+      return getFallbackDraftLinks();
+    }
+
+    console.log('🚀 Launching browser with config:', browserConfig);
+    browser = await puppeteer.launch(browserConfig);
     
     const page = await browser.newPage();
     
-    // Set longer timeouts for Render
+    // Set timeouts
     await page.setDefaultNavigationTimeout(30000);
-    await page.setDefaultTimeout(10000);
+    await page.setDefaultTimeout(15000);
     
+    console.log('🌐 Navigating to draftlol...');
     await page.goto("https://draftlol.dawe.gg/", { 
       waitUntil: 'networkidle0',
       timeout: 30000 
     });
 
-    // Click "Create Lobby"
+    console.log('🖱️ Clicking create lobby button...');
     await page.waitForSelector("div.sendButton", { timeout: 10000 });
     await page.click("div.sendButton");
     
-    // Wait for blue and red inputs
+    console.log('⏳ Waiting for lobby inputs...');
     await page.waitForSelector(".createContainer input.inputBlue", { timeout: 10000 });
     await page.waitForSelector(".createContainer input.inputRed", { timeout: 10000 });
     
-    // Wait for spectator input
     await page.waitForFunction(() => {
       const container = document.querySelector(".createContainer");
       if (!container) return false;
       const inputs = Array.from(container.querySelectorAll("input[type=text]"));
       return inputs.some((input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed"));
     }, { timeout: 10000 });
-    
-    // Grab all three links
+
+    console.log('📝 Extracting draft links...');
     const links = await page.evaluate(() => {
       const container = document.querySelector(".createContainer");
       if (!container) return { blue: "", red: "", spectator: "" };
@@ -909,12 +945,11 @@ async function createDraftLolLobby() {
       return { blue, red, spectator };
     });
 
+    console.log('✅ Draft links created successfully');
     return links;
 
   } catch (error) {
-    console.error('Draft lobby creation failed:', error);
-    // Return fallback links or empty strings
-    return { blue: "", red: "", spectator: "" };
+    console.error('❌ Draft lobby creation failed:', error);
   } finally {
     if (browser) {
       await browser.close().catch(console.error);
