@@ -134,7 +134,7 @@ function checkWeeklyReset(timeoutTracking) {
   }
 }
 
-let playerData = {};
+let playerData = loadData();
 
 function ensurePlayer(id) {
   if (!playerData[id]) {
@@ -192,41 +192,16 @@ function getNextMatchId() {
   return (matchHistory.length + 1).toString();
 }
 
-async function loadMatchHistory() {
-    if (matchHistoryCollection) {
-        try {
-            const history = await matchHistoryCollection.find({}).sort({ timestamp: 1 }).toArray();
-            console.log(`📥 Loaded ${history.length} matches from MongoDB`);
-            return history;
-        } catch (error) {
-            console.error('Error loading match history from MongoDB:', error);
-        }
-    }
-    
-    // Fallback to file
-    if (fs.existsSync(MATCH_HISTORY_FILE)) {
-        return JSON.parse(fs.readFileSync(MATCH_HISTORY_FILE));
-    }
-    return [];
+// Add this function to load/save match history
+function loadMatchHistory() {
+  if (fs.existsSync(MATCH_HISTORY_FILE)) {
+    return JSON.parse(fs.readFileSync(MATCH_HISTORY_FILE));
+  }
+  return [];
 }
 
-async function saveMatchHistory(history) {
-    if (matchHistoryCollection) {
-        try {
-            // Clear and rebuild collection
-            await matchHistoryCollection.deleteMany({});
-            if (history.length > 0) {
-                await matchHistoryCollection.insertMany(history);
-            }
-            console.log(`💾 Saved ${history.length} matches to MongoDB`);
-            return;
-        } catch (error) {
-            console.error('Error saving match history to MongoDB:', error);
-        }
-    }
-    
-    // Fallback to file
-    fs.writeFileSync(MATCH_HISTORY_FILE, JSON.stringify(history, null, 2));
+function saveMatchHistory(history) {
+  fs.writeFileSync(MATCH_HISTORY_FILE, JSON.stringify(history, null, 2));
 }
 
 // ---------------- RANK SYSTEM ----------------
@@ -454,6 +429,13 @@ function isUserInTimeout(userId) {
   return { inTimeout: false, timeLeft: 0, offenses: playerTimeout.offenses };
 }
 
+// ---------------- DISCORD TIMESTAMPS ----------------
+function createDiscordTimestamp(targetTime, style = 'R') {
+  // targetTime can be a Date object or milliseconds
+  const timestamp = Math.floor(new Date(targetTime).getTime() / 1000);
+  return `<t:${timestamp}:${style}>`;
+}
+
 // ---------------- HELPER FUNCTIONS ----------------
 function formatRankDisplay(rank, division, lp) {
   if (division) {
@@ -582,7 +564,7 @@ async function updateLeaderboardChannel(guild) {
 
 // ---------------- READY CHECK ----------------
 async function startReadyCheck(channel) {
-  // ADD SOLUTION 4: Safety Check in startReadyCheck
+  // Safety Check in startReadyCheck
   if (queue.length !== QUEUE_SIZE) {
     console.warn(`⚠️ Ready check attempted with ${queue.length} players, expected ${QUEUE_SIZE}`);
     return;
@@ -596,39 +578,60 @@ async function startReadyCheck(channel) {
   const participants = [...queue];
   const ready = new Set();
   const declined = new Set();
-  const TIMEOUT = 65; // seconds
-  let remaining = TIMEOUT;
+  const TIMEOUT = 60; // 60 seconds
+  const endTime = Date.now() + (TIMEOUT * 1000);
 
-  // Create the initial embed
+  // Debounce variables
+  let pendingUpdate = false;
+  let updateTimeout = null;
+  const DEBOUNCE_DELAY = 300; // 300ms debounce
+
+  // Create the initial embed with Discord timestamp - REMOVED FOOTER
   const createReadyCheckEmbed = () => {
-  // Cache these calculations to avoid repeated processing
-  const readyArray = Array.from(ready);
-  const waitingArray = participants.filter(id => !ready.has(id) && !declined.has(id));
-  const declinedArray = Array.from(declined);
-  
-  const embed = new EmbedBuilder()
-    .setTitle("⚔️ Ready Check")
-    .setDescription(
-      `${participants.length} players have queued!\n\n` +
-      `**Click ✅ Ready if you're ready**\n` +
-      `**Click ❌ Decline if you can't**\n\n` +
-      `⏳ **Time remaining:** ${remaining}s\n\n` +
-      `**Ready (${ready.size}/${participants.length}):**\n` +
-      `${readyArray.length > 0 ? readyArray.map(id => `<@${id}> ✅`).join('\n') : 'None yet'}\n\n` +
-      `**Waiting for response:**\n` +
-      `${waitingArray.length > 0 ? waitingArray.map(id => `<@${id}> ⏳`).join('\n') : 'None'}`
-    )
-    .setColor(0x00ffff)
-    .setFooter({ text: `Ready: ${ready.size}/${participants.length} | ${remaining}s remaining` });
+    const readyArray = Array.from(ready);
+    const waitingArray = participants.filter(id => !ready.has(id) && !declined.has(id));
+    const declinedArray = Array.from(declined);
+    
+    const embed = new EmbedBuilder()
+      .setTitle("⚔️ Ready Check")
+      .setDescription(
+        `${participants.length} players have queued!\n\n` +
+        `**Click ✅ Ready if you're ready**\n` +
+        `**Click ❌ Decline if you can't**\n\n` +
+        `⏳ **Time remaining:** ${createDiscordTimestamp(endTime, 'R')}\n\n` +
+        `**Ready (${ready.size}/${participants.length}):**\n` +
+        `${readyArray.length > 0 ? readyArray.map(id => `<@${id}> ✅`).join('\n') : 'None yet'}\n\n` +
+        `**Waiting for response:**\n` +
+        `${waitingArray.length > 0 ? waitingArray.map(id => `<@${id}> ⏳`).join('\n') : 'None'}`
+      )
+      .setColor(0x00ffff);
 
-  if (declinedArray.length > 0) {
-    embed.addFields({
-      name: "❌ Declined",
-      value: declinedArray.map(id => `<@${id}>`).join('\n'),
-    });
-  }
+    if (declinedArray.length > 0) {
+      embed.addFields({
+        name: "❌ Declined",
+        value: declinedArray.map(id => `<@${id}>`).join('\n'),
+      });
+    }
 
     return embed;
+  };
+
+  // Debounced update function
+  const debouncedUpdate = async () => {
+    if (updateTimeout) {
+      clearTimeout(updateTimeout);
+    }
+    
+    updateTimeout = setTimeout(async () => {
+      try {
+        const updatedEmbed = createReadyCheckEmbed();
+        await msg.edit({ embeds: [updatedEmbed] }).catch(() => {});
+        pendingUpdate = false;
+      } catch (error) {
+        console.log('Edit error during ready check:', error.message);
+        pendingUpdate = false;
+      }
+    }, DEBOUNCE_DELAY);
   };
 
   // Cache the row components to avoid rebuilding them every second
@@ -653,27 +656,8 @@ async function startReadyCheck(channel) {
   // Create collector
   const collector = msg.createMessageComponentCollector({ time: TIMEOUT * 1000 });
 
-  // In startReadyCheck function, fix the countdown:
-  let countdown = setInterval(async () => {
-    remaining--;
-    
-    if (remaining <= 0) {
-      clearInterval(countdown); // Clean up when done
-      return;
-    }
-    
-    try {
-      const embed = createReadyCheckEmbed();
-      await msg.edit({ embeds: [embed] }).catch(() => {});
-    } catch (error) {
-      if (error.code !== 10008) {
-        console.log('Countdown edit error:', error.message);
-      }
-    }
-  }, 1100);
-
   // Register active ready-check so !forceready can stop it
-  activeReadyCheck = { msg, collector, countdown };
+  activeReadyCheck = { msg, collector };
 
   collector.on("collect", async (i) => {
     if (!participants.includes(i.user.id)) {
@@ -716,19 +700,35 @@ async function startReadyCheck(channel) {
 
     // Mark ready
     ready.add(i.user.id);
+    
+    // ✅ DEBOUNCED UPDATE - Batch rapid clicks
+    debouncedUpdate();
+
     await i.deferUpdate().catch((err) => {
       if (err.code !== 10062) console.error("Button deferUpdate error:", err);
     });
 
     if (ready.size === participants.length) {
+      // If all players are ready, update immediately (no debounce)
+      if (updateTimeout) {
+        clearTimeout(updateTimeout);
+      }
+      try {
+        const updatedEmbed = createReadyCheckEmbed();
+        await msg.edit({ embeds: [updatedEmbed] }).catch(() => {});
+      } catch (error) {
+        console.log('Edit error during ready check:', error.message);
+      }
       collector.stop("all_ready");
     }
     return;
   });
   
-
   collector.on("end", async (_, reason) => {
-    clearInterval(countdown);
+    // Clean up debounce timer
+    if (updateTimeout) {
+      clearTimeout(updateTimeout);
+    }
     activeReadyCheck = null;
 
     let description = "";
@@ -737,6 +737,7 @@ async function startReadyCheck(channel) {
     } else if (reason === "declined") {
         description = "❌ A player declined the ready check and received a timeout penalty. Match canceled.";
     } else {
+        // ✅ TIMEOUT REASON - APPLY PENALTIES TO PLAYERS WHO DIDN'T RESPOND
         description = "⌛ Ready check timed out. Match canceled.";
         
         const notReady = participants.filter((id) => !ready.has(id) && !declined.has(id));
@@ -974,6 +975,31 @@ async function updateQueueMessage() {
   }, 250); // Wait 250ms after last change
 }
 
+// Helper function to update match message with vote display
+async function updateMatchVoteDisplay(channel, match) {
+  if (!match.matchMessageId) return;
+  
+  try {
+    const matchMessage = await channel.messages.fetch(match.matchMessageId);
+    const embed = matchMessage.embeds[0];
+    const team1Votes = match.votes.team1.size;
+    const team2Votes = match.votes.team2.size;
+    const totalVotes = team1Votes + team2Votes;
+    
+    // Create a new embed with vote information
+    const updatedEmbed = EmbedBuilder.from(embed)
+      .addFields({
+        name: "🗳️ Match Voting",
+        value: `🔵 Team 1: ${team1Votes} votes\n🔴 Team 2: ${team2Votes} votes\n📊 Total: ${totalVotes}/10 players\n\n*6 votes for one team ends the match*`,
+        inline: false
+      });
+    
+    await matchMessage.edit({ embeds: [updatedEmbed] });
+  } catch (error) {
+    console.error("Failed to update match vote display:", error);
+  }
+}
+
 // ---------------- CONSOLE LOGGING FUNCTION ----------------
 function logRoleAssignmentToConsole(bestTeam1, bestTeam2, team1Roles, team2Roles, team1Satisfaction, team2Satisfaction) {
   console.log('\n🎯 ===== ROLE ASSIGNMENT ANALYTICS =====');
@@ -1010,6 +1036,7 @@ client.on("interactionCreate", async (interaction) => {
   // ---------------- BUTTONS ----------------
   if (interaction.isButton()) {
     const id = interaction.user.id;
+    // --- Report Win Buttons ---
     if (interaction.customId === 'open_role_selection') {
         try {
             // Defer immediately to extend response time to 15 minutes
@@ -1192,6 +1219,79 @@ client.on("interactionCreate", async (interaction) => {
       } finally {
         // UNLOCK THE QUEUE
         queueLock = false;
+      }
+    }
+
+    else if (interaction.customId.startsWith("report_win_")) {
+      const team = interaction.customId.split("_")[2]; // Gets "1" or "2"
+      
+      // Find the match for this channel
+      const match = matches.get(interaction.channelId);
+      if (!match) {
+        return interaction.reply({ 
+          content: "❌ No active match found in this channel.", 
+          ephemeral: true 
+        });
+      }
+      
+      const playerId = interaction.user.id;
+      const isStaff = interaction.member.permissions.has("ManageGuild");
+      
+      // STAFF OVERRIDE: Immediate win
+      if (isStaff) {
+        await endMatch(interaction.channel, team);
+        return interaction.reply({ 
+          content: `✅ Staff override: Match result recorded! Team ${team} wins!`, 
+          ephemeral: true 
+        });
+      }
+      
+      // PLAYER VOTING: Check if player is in this match
+      const isInMatch = match.team1.includes(playerId) || match.team2.includes(playerId);
+      if (!isInMatch) {
+        return interaction.reply({ 
+          content: "❌ You are not a player in this match and cannot vote.", 
+          ephemeral: true 
+        });
+      }
+      
+      // Remove previous votes from this player
+      match.votes.team1.delete(playerId);
+      match.votes.team2.delete(playerId);
+      
+      // Add new vote
+      if (team === "1") {
+        match.votes.team1.add(playerId);
+      } else {
+        match.votes.team2.add(playerId);
+      }
+      
+      // Check if we have enough votes (6 out of 10 players)
+      const totalVotes = match.votes.team1.size + match.votes.team2.size;
+      const team1Votes = match.votes.team1.size;
+      const team2Votes = match.votes.team2.size;
+      
+      let voteMessage = `🗳️ You voted for Team ${team}!\n\n`;
+      voteMessage += `**Current Vote Count:**\n`;
+      voteMessage += `🔵 Team 1: ${team1Votes} votes\n`;
+      voteMessage += `🔴 Team 2: ${team2Votes} votes\n`;
+      voteMessage += `📊 Total votes: ${totalVotes}/10 players\n\n`;
+      
+      // Check for win condition (6 votes for one team)
+      if (team1Votes >= 6) {
+        voteMessage += `🏆 **Team 1 has reached 6 votes! Match ending...**`;
+        await interaction.reply({ content: voteMessage, ephemeral: false });
+        await endMatch(interaction.channel, "1");
+      } else if (team2Votes >= 6) {
+        voteMessage += `🏆 **Team 2 has reached 6 votes! Match ending...**`;
+        await interaction.reply({ content: voteMessage, ephemeral: false });
+        await endMatch(interaction.channel, "2");
+      } else {
+        voteMessage += `*Need 6 votes for one team to end the match*`;
+        await interaction.reply({ content: voteMessage, ephemeral: true });
+        
+        // Also update the match message to show current votes
+        await updateMatchVoteDisplay(interaction.channel, match);
       }
     }
 
@@ -1403,10 +1503,7 @@ client.on("messageCreate", async (message) => {
     // Don't delete bot messages that are part of ready checks or other important bot messages
     if (message.embeds.length > 0) {
       const embed = message.embeds[0];
-      if (embed.title && (
-        embed.title.includes("Ready Check") || 
-        embed.title.includes("Current Queue")
-      )) {
+      if (embed.title && (embed.title.includes("Ready Check"))) {
         return; // Skip deletion for important bot embeds
       }
     }
@@ -2200,74 +2297,74 @@ client.on("messageCreate", async (message) => {
   }
 
   // ---------------- !timeoutinfo ----------------
-if (cmd === "!timeoutinfo") {
-  const userMention = args[0] || message.author.id;
-  const userId = userMention.replace(/[<@!>]/g, "") || message.author.id;
+  if (cmd === "!timeoutinfo") {
+    const userMention = args[0] || message.author.id;
+    const userId = userMention.replace(/[<@!>]/g, "") || message.author.id;
+    
+    const timeoutInfo = getTimeoutInfo(userId);
+    const nextReset = createDiscordTimestamp(playerData._timeoutTracking.weeklyReset, 'F');
+    
+    const embed = new EmbedBuilder()
+      .setTitle("⏰ Timeout Information")
+      .setDescription(`Timeout status for <@${userId}>`)
+      .addFields(
+        { name: "Current Offenses", value: `${timeoutInfo.offenses}`, inline: true },
+        { name: "In Timeout", value: timeoutInfo.inTimeout ? "✅ Yes" : "❌ No", inline: true },
+        { name: "Weekly Reset", value: nextReset, inline: true }
+      );
+    
+    if (timeoutInfo.inTimeout) {
+      const timeoutEnd = Date.now() + timeoutInfo.timeLeft;
+      embed.addFields({
+        name: "Time Remaining",
+        value: `${createDiscordTimestamp(timeoutEnd, 'R')} (${createDiscordTimestamp(timeoutEnd, 'F')})`
+      });
+    }
+    if (timeoutInfo.offenses > 0) {
+      embed.addFields({
+        name: "Next Timeout Duration",
+        value: formatTimeLeft(timeoutInfo.nextTimeout)
+      });
+    }
   
-  const timeoutInfo = getTimeoutInfo(userId);
-  const nextReset = new Date(playerData._timeoutTracking.weeklyReset).toLocaleDateString();
-  
-  const embed = new EmbedBuilder()
-    .setTitle("⏰ Timeout Information")
-    .setDescription(`Timeout status for <@${userId}>`)
-    .addFields(
-      { name: "Current Offenses", value: `${timeoutInfo.offenses}`, inline: true },
-      { name: "In Timeout", value: timeoutInfo.inTimeout ? "✅ Yes" : "❌ No", inline: true },
-      { name: "Weekly Reset", value: nextReset, inline: true }
-    );
-  
-  if (timeoutInfo.inTimeout) {
-    embed.addFields({
-      name: "Time Remaining",
-      value: formatTimeLeft(timeoutInfo.timeLeft)
-    });
-  }
-  
-  if (timeoutInfo.offenses > 0) {
-    embed.addFields({
-      name: "Next Timeout Duration",
-      value: formatTimeLeft(timeoutInfo.nextTimeout)
-    });
-  }
-  
-  embed.setColor(timeoutInfo.inTimeout ? 0xff0000 : 0x00ff00);
-  
-  await message.channel.send({ embeds: [embed] });
-}
-
-// ---------------- !cleartimeout ----------------
-if (cmd === "!cleartimeout") {
-  if (!message.member.permissions.has("ManageGuild")) {
-    return message.reply("❌ Only staff members can use this command.");
+    embed.setColor(timeoutInfo.inTimeout ? 0xff0000 : 0x00ff00);
+    
+    await message.channel.send({ embeds: [embed] });
   }
 
-  const userMention = args[0];
-  if (!userMention) return message.reply("Usage: !cleartimeout <@user>");
+  // ---------------- !cleartimeout ----------------
+  if (cmd === "!cleartimeout") {
+    if (!message.member.permissions.has("ManageGuild")) {
+      return message.reply("❌ Only staff members can use this command.");
+    }
 
-  const userId = userMention.replace(/[<@!>]/g, "");
-  
-  if (playerData._timeoutTracking.playerTimeouts[userId]) {
-    delete playerData._timeoutTracking.playerTimeouts[userId];
+    const userMention = args[0];
+    if (!userMention) return message.reply("Usage: !cleartimeout <@user>");
+
+    const userId = userMention.replace(/[<@!>]/g, "");
+    
+    if (playerData._timeoutTracking.playerTimeouts[userId]) {
+      delete playerData._timeoutTracking.playerTimeouts[userId];
+      saveData();
+      await message.channel.send(`✅ Cleared timeout for <@${userId}>`);
+    } else {
+      await message.reply("⚠️ That user has no active timeout record.");
+    }
+  }
+
+  // ---------------- !forcetimeoutreset ----------------
+  if (cmd === "!forcetimeoutreset") {
+    if (!message.member.permissions.has("ManageGuild")) {
+      return message.reply("❌ Only staff members can use this command.");
+    }
+
+    // Force immediate weekly reset
+    playerData._timeoutTracking.playerTimeouts = {};
+    playerData._timeoutTracking.weeklyReset = Date.now() + WEEKLY_RESET_MS;
     saveData();
-    await message.channel.send(`✅ Cleared timeout for <@${userId}>`);
-  } else {
-    await message.reply("⚠️ That user has no active timeout record.");
+    
+    await message.channel.send("✅ Force reset all timeouts. Weekly reset scheduled.");
   }
-}
-
-// ---------------- !forcetimeoutreset ----------------
-if (cmd === "!forcetimeoutreset") {
-  if (!message.member.permissions.has("ManageGuild")) {
-    return message.reply("❌ Only staff members can use this command.");
-  }
-
-  // Force immediate weekly reset
-  playerData._timeoutTracking.playerTimeouts = {};
-  playerData._timeoutTracking.weeklyReset = Date.now() + WEEKLY_RESET_MS;
-  saveData();
-  
-  await message.channel.send("✅ Force reset all timeouts. Weekly reset scheduled.");
-}
 
   // ---------------- !forceready ----------------
   if (cmd === "!forceready") {
@@ -2536,45 +2633,104 @@ if (cmd === "!forcetimeoutreset") {
     if (!message.member.permissions.has("ManageGuild")) {
       return message.reply("❌ You need Manage Server permissions to do that.");
     }
+    
     const args = message.content.split(" ");
     const userMention = args[1];
     const url = args[2];
+    
     if (!userMention || !url) {
-      return message.reply("Usage: !forceregister <@user> <OP.GG link>");
+      return message.reply("Usage: !forceregister <@user> <OP.GG link> [rank division lp]\nExample: !forceregister @user https://op.gg/summoners/na/example\nExample with rank: !forceregister @user https://op.gg/summoners/na/example Gold 3 75");
     }
+    
     if (!url.includes("op.gg")) return message.reply("❌ Please provide a valid OP.GG link.");
+    
     const userId = userMention.replace(/[<@!>]/g, "");
     if (!userId) return message.reply("❌ Invalid user mention");
+
     try {
-      const res = await axios.get(url);
-      const $ = cheerio.load(res.data);
-      const tierText = $("strong.text-xl").first().text().trim();
-      const lpText = $("span.text-xs.text-gray-500").first().text().trim();
-      const lp = parseInt(lpText);
-      if (!tierText || isNaN(lp)) return message.reply("❌ Could not parse rank/LP from OP.GG.");
-      let rank, division;
-      const tierParts = tierText.trim().split(/\s+/);
-      if (tierParts.length === 2) {
-        rank = tierParts[0].charAt(0).toUpperCase() + tierParts[0].slice(1).toLowerCase();
-        const divText = tierParts[1].toUpperCase();
+      // Check if custom rank parameters are provided
+      const hasCustomRank = args.length >= 5; // URL + rank + division + lp
+      
+      let rank, division, lp;
+      
+      if (hasCustomRank) {
+        // Use custom rank provided by staff
+        rank = args[3].charAt(0).toUpperCase() + args[3].slice(1).toLowerCase();
+        const divText = args[4].toUpperCase();
+        
+        // Handle division (can be number or roman numeral)
         const romanToNumber = { IV: 4, III: 3, II: 2, I: 1 };
-        division = !isNaN(parseInt(divText)) ? parseInt(divText) : romanToNumber[divText] || 4;
+        division = !isNaN(parseInt(divText)) ? parseInt(divText) : romanToNumber[divText];
+        
+        lp = parseInt(args[5]) || 0;
+        
+        // Validate rank
+        const validRanks = ["Iron", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond", "Master", "Grandmaster", "Challenger"];
+        if (!validRanks.includes(rank)) {
+          return message.reply(`❌ Invalid rank. Valid ranks are: ${validRanks.join(", ")}`);
+        }
+        
+        // Validate division for non-Master+ ranks
+        if (["Iron", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond"].includes(rank)) {
+          if (!division || division < 1 || division > 4) {
+            return message.reply("❌ Invalid division. Must be between 1-4 for ranks up to Diamond.");
+          }
+        } else {
+          // Master+ ranks don't have divisions
+          division = null;
+        }
+        
+        // Validate LP
+        if (lp < 0 || lp > 999) {
+          return message.reply("❌ Invalid LP. Must be between 0-999.");
+        }
+        
       } else {
-        rank = tierParts[0].charAt(0).toUpperCase() + tierParts[0].slice(1).toLowerCase();
-        division = null;
+        // Try to scrape rank from OP.GG
+        const res = await axios.get(url);
+        const $ = cheerio.load(res.data);
+        const tierText = $("strong.text-xl").first().text().trim();
+        const lpText = $("span.text-xs.text-gray-500").first().text().trim();
+        const lp = parseInt(lpText);
+        
+        if (!tierText || isNaN(lp)) {
+          return message.reply("❌ Could not parse rank/LP from OP.GG. Please provide rank manually: !forceregister <@user> <OP.GG link> <rank> <division> <lp>");
+        }
+        
+        const tierParts = tierText.trim().split(/\s+/);
+        if (tierParts.length === 2) {
+          rank = tierParts[0].charAt(0).toUpperCase() + tierParts[0].slice(1).toLowerCase();
+          const divText = tierParts[1].toUpperCase();
+          const romanToNumber = { IV: 4, III: 3, II: 2, I: 1 };
+          division = !isNaN(parseInt(divText)) ? parseInt(divText) : romanToNumber[divText] || 4;
+        } else {
+          rank = tierParts[0].charAt(0).toUpperCase() + tierParts[0].slice(1).toLowerCase();
+          division = null;
+        }
       }
+      
       ensurePlayer(userId);
       playerData[userId].summonerName = url;
       playerData[userId].rank = rank;
       playerData[userId].division = division;
       playerData[userId].lp = lp;
       playerData[userId].IHP = getIHP(playerData[userId]);
+      
       saveData();
-      await updateLeaderboardChannel(message.guild); // or channel.guild
-      return message.reply(`✅ Force-registered <@${userId}> as **${tierText} ${lp} LP**`);
+      await updateLeaderboardChannel(message.guild);
+      
+      const rankDisplay = division ? `${rank} ${division} ${lp} LP` : `${rank} ${lp} LP`;
+      return message.reply(`✅ Force-registered <@${userId}> as **${rankDisplay}**${hasCustomRank ? " (manual rank)" : ""}`);
+      
     } catch (err) {
       console.error(err);
-      return message.reply("❌ Failed to fetch OP.GG page. Make sure the link is correct.");
+      
+      // If scraping fails but custom rank wasn't provided, show usage
+      if (args.length < 5) {
+        return message.reply(`❌ Failed to fetch OP.GG page and no manual rank provided.\nUsage: !forceregister <@user> <OP.GG link> [rank division lp]\nExample with rank: !forceregister @user https://op.gg/summoners/na/example Gold 3 75`);
+      } else {
+        return message.reply("❌ Failed to process registration. Make sure the OP.GG link is correct.");
+      }
     }
   }
 
@@ -3129,39 +3285,63 @@ async function makeTeams(channel) {
   // ---------------- CREATE SEPARATE MATCH CATEGORY FOR EACH MATCH ----------------
   const guild = channel.guild;
   
-  async function getNextMatchId() {
-    const matchHistory = await loadMatchHistory();
+  // Generate sequential match ID
+  function getNextMatchId() {
+    const matchHistory = loadMatchHistory();
     
     // If no matches exist, start from 1
     if (matchHistory.length === 0) {
       return "1";
     }
     
-    // Extract all numeric IDs and find the maximum
-    const numericIds = matchHistory
-      .map(match => {
-        // Convert string IDs to numbers, ignore non-numeric
-        const id = match.id;
-        if (typeof id === 'number') return id;
-        if (typeof id === 'string') {
-          const num = parseInt(id);
-          return isNaN(num) ? 0 : num;
-        }
-        return 0;
-      })
-      .filter(id => id > 0); // Only positive numbers
+    // Find the highest existing match ID and increment
+    const maxId = Math.max(...matchHistory.map(match => {
+      // Handle both string and number IDs
+      const id = match.id;
+      return typeof id === 'string' ? parseInt(id) || 0 : id;
+    }).filter(id => !isNaN(id)));
     
-    // If we found valid numeric IDs, use the max + 1
-    if (numericIds.length > 0) {
-      const maxId = Math.max(...numericIds);
-      return (maxId + 1).toString();
-    }
-    
-    // Fallback: start from current count + 1
-    return (matchHistory.length + 1).toString();
+    return (maxId + 1).toString();
   }
 
-  const matchId = await getNextMatchId();
+  async function loadMatchHistory() {
+    if (matchHistoryCollection) {
+        try {
+            const history = await matchHistoryCollection.find({}).sort({ timestamp: 1 }).toArray();
+            console.log(`📥 Loaded ${history.length} matches from MongoDB`);
+            return history;
+        } catch (error) {
+            console.error('Error loading match history from MongoDB:', error);
+        }
+    }
+    
+    // Fallback to file
+    if (fs.existsSync(MATCH_HISTORY_FILE)) {
+        return JSON.parse(fs.readFileSync(MATCH_HISTORY_FILE));
+    }
+    return [];
+}
+
+async function saveMatchHistory(history) {
+    if (matchHistoryCollection) {
+        try {
+            // Clear and rebuild collection
+            await matchHistoryCollection.deleteMany({});
+            if (history.length > 0) {
+                await matchHistoryCollection.insertMany(history);
+            }
+            console.log(`💾 Saved ${history.length} matches to MongoDB`);
+            return;
+        } catch (error) {
+            console.error('Error saving match history to MongoDB:', error);
+        }
+    }
+    
+    // Fallback to file
+    fs.writeFileSync(MATCH_HISTORY_FILE, JSON.stringify(history, null, 2));
+}
+
+  const matchId = getNextMatchId();
   const matchCategoryName = `Match ${matchId}`; // Simpler name without timestamp
   
   // Create a dedicated category for this match
@@ -3276,53 +3456,6 @@ async function makeTeams(channel) {
       .join("\n");
   }
 
-  // --- Send match embed with assigned roles ---
-  const embed = new EmbedBuilder()
-    .setTitle("🎮 Match Ready!")
-    .setDescription(`Your match has been created in ${matchChannel}!\n\n**ELO Balance:** 🔵 Team 1: ${Math.round(bestAvg1)} | 🔴 Team 2: ${Math.round(bestAvg2)} | **Difference:** ${bestDiff.toFixed(2)}`)
-    .addFields(
-      {
-        name: `🔵 Team 1 (Avg Elo: ${Math.round(bestAvg1)})`,
-        value: formatTeamDisplay(bestTeam1, team1Roles),
-        inline: false,
-      },
-      {
-        name: `🔴 Team 2 (Avg Elo: ${Math.round(bestAvg2)})`,
-        value: formatTeamDisplay(bestTeam2, team2Roles),
-        inline: false,
-      },
-      {
-        name: "🎯 Voice Channels",
-        value: `🔵 ${team1VC}\n🔴 ${team2VC}`,
-        inline: false,
-      },
-    )
-    .setFooter({ text: "Join your team's voice channel and check the match lobby for draft links!" });
-
-  // Send notification in the queue channel
-  await channel.send({ 
-    content: `🎉 Match created! ${bestTeam1.map(id => `<@${id}>`).join(' ')} ${bestTeam2.map(id => `<@${id}>`).join(' ')}`,
-    embeds: [embed] 
-  });
-
-  // Send detailed info in the match channel
-  const matchEmbed = new EmbedBuilder()
-    .setTitle("🎮 Match Lobby")
-    .setDescription("Welcome to your match! Use the buttons below to access draft links.\n\n**Assigned Drafters:**\n🔵 Blue Team: <@" + team1TopElo + "> (Highest Elo)\n🔴 Red Team: <@" + team2TopElo + "> (Highest Elo)")
-    .addFields(
-      {
-        name: `🔵 Team 1 (Avg Elo: ${Math.round(bestAvg1)})`,
-        value: formatTeamDisplay(bestTeam1, team1Roles),
-        inline: false,
-      },
-      {
-        name: `🔴 Team 2 (Avg Elo: ${Math.round(bestAvg2)})`,
-        value: formatTeamDisplay(bestTeam2, team2Roles),
-        inline: false,
-      }
-    )
-    .setColor(0x00ff00);
-
   // --- Create Draft Lobby using draftlol.dawe.gg ---
   let blue = "", red = "", spectator = "";
 
@@ -3331,33 +3464,77 @@ async function makeTeams(channel) {
     blue = links.blue;
     red = links.red;
     spectator = links.spectator;
-
-    const draftRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`draft_blue_${team1TopElo}`)
-        .setLabel("🟦 Blue Draft Link")
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId(`draft_red_${team2TopElo}`)
-        .setLabel("🟥 Red Draft Link")
-        .setStyle(ButtonStyle.Danger),
-      new ButtonBuilder()
-        .setCustomId(`draft_spectator`)
-        .setLabel("👁️ Spectator Link")
-        .setStyle(ButtonStyle.Secondary)
-    );
-
-    await matchChannel.send({
-      embeds: [matchEmbed],
-      content: `🌐 **Match Links**\n🟦 **Blue Team OP.GG:** <${team1Link}>\n🟥 **Red Team OP.GG:** <${team2Link}>`,
-      components: [draftRow]
-    });
   } catch (err) {
     console.error("Failed to create draft lobby:", err);
-    await matchChannel.send({
-      embeds: [matchEmbed],
-      content: `🌐 **Match Links**\n🟦 **Blue Team OP.GG:** <${team1Link}>\n🟥 **Red Team OP.GG:** <${team2Link}>\n❌ Failed to create Draft Lobby. Players will need to make draft manually.`
-    });
+    // Continue without draft links - we'll handle this in the message content
+  }
+
+  // Create multiple action rows for better organization
+  const draftRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`draft_blue_${team1TopElo}`)
+      .setLabel("🟦 Blue Draft Link")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`draft_red_${team2TopElo}`)
+      .setLabel("🟥 Red Draft Link")
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`draft_spectator`)
+      .setLabel("👁️ Spectator Link")
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  // Match management row
+  const managementRow = new ActionRowBuilder().addComponents(
+  new ButtonBuilder()
+    .setCustomId(`report_win_1`)
+    .setLabel("🏆 Team 1 Won")
+    .setStyle(ButtonStyle.Success),
+  new ButtonBuilder()
+    .setCustomId(`report_win_2`)
+    .setLabel("🏆 Team 2 Won")
+    .setStyle(ButtonStyle.Success)
+  );
+
+  const matchEmbed = new EmbedBuilder()
+  .setTitle("🎮 Match Lobby")
+  .setDescription(`Welcome to your match! Use the buttons below to access draft links and manage the match.
+
+  **Assigned Drafters:**
+  🔵 Blue Team: <@${team1TopElo}> (Highest Elo)
+  🔴 Red Team: <@${team2TopElo}> (Highest Elo)
+
+  **Team OP.GG Links:**
+  🟦 [Blue Team Multi OP.GG](${team1Link})
+  🟥 [Red Team Multi OP.GG](${team2Link})
+
+  **Match Voting:**
+  Players can vote for the winning team. 6 votes for one team will automatically end the match.`)
+  .addFields(
+    {
+      name: `🔵 Team 1 (Avg Elo: ${Math.round(bestAvg1)})`,
+      value: formatTeamDisplay(bestTeam1, team1Roles),
+      inline: false,
+    },
+    {
+      name: `🔴 Team 2 (Avg Elo: ${Math.round(bestAvg2)})`,
+      value: formatTeamDisplay(bestTeam2, team2Roles),
+      inline: false,
+    }
+  )
+  .setColor(0x00ff00);
+
+
+  // Prepare the message options
+  const messageOptions = {
+    embeds: [matchEmbed],
+    components: [draftRow, managementRow]
+  };
+
+  // Only add content if draft links failed
+  if (!blue || !red || !spectator) {
+    messageOptions.content = `❌ Failed to create draft lobby. Players will need to make draft manually.`;
   }
 
   const matchData = {
@@ -3372,8 +3549,19 @@ async function makeTeams(channel) {
     blue, 
     red, 
     spectator,
-    matchId: matchId // ADD THIS LINE - store the match ID
+    matchId: matchId, // Store the match ID
+    matchMessageId: null,
+    votes: {
+      team1: new Set(), // Players who voted for team 1
+      team2: new Set()  // Players who voted for team 2
+    }
   };
+
+  // Send the message
+  const matchMessage = await matchChannel.send(messageOptions);
+
+  // Store the match message ID for later reference
+  matchData.matchMessageId = matchMessage.id;
 
   // Store match by channel ID
   matches.set(matchChannel.id, matchData);
