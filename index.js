@@ -855,7 +855,7 @@ async function createDraftLolLobby() {
   try {
     console.log('🚀 Starting draft lobby creation...');
     
-    // Configuration for Render environment
+    // Simple configuration for Render
     const browserConfig = {
       headless: true,
       args: [
@@ -863,26 +863,14 @@ async function createDraftLolLobby() {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--single-process',
-        '--no-zygote',
-        '--disable-web-security',
-        '--disable-features=VizDisplayCompositor',
-        '--window-size=1920,1080'
-      ],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null
+        '--single-process'
+      ]
     };
 
-    console.log('🔧 Launching browser with config:', {
-      headless: true,
-      executablePath: browserConfig.executablePath ? 'custom' : 'default'
-    });
-
+    console.log('🔧 Launching browser with built-in Chrome...');
     browser = await puppeteer.launch(browserConfig);
-    const page = await browser.newPage();
     
-    // Set realistic viewport and user agent
-    await page.setViewport({ width: 1920, height: 1080 });
-    await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    const page = await browser.newPage();
     
     // Set timeouts
     await page.setDefaultNavigationTimeout(30000);
@@ -916,64 +904,34 @@ async function createDraftLolLobby() {
       const container = document.querySelector(".createContainer");
       if (!container) return { blue: "", red: "", spectator: "" };
       
-      const blue = container.querySelector(".inputBlue")?.value || "";
-      const red = container.querySelector(".inputRed")?.value || "";
+      const blueInput = container.querySelector(".inputBlue");
+      const redInput = container.querySelector(".inputRed");
       
-      // Find spectator input (it's not always the third one, so we need to be careful)
-      const inputs = Array.from(container.querySelectorAll("input[type=text]"));
-      const spectatorInput = inputs.find(input => {
-        const value = input.value || '';
-        return value.includes('draftlol.dawe.gg') && 
-               !value.includes('blue') && 
-               !value.includes('red');
+      // Get all inputs and find the spectator one
+      const allInputs = Array.from(container.querySelectorAll("input[type=text]"));
+      const spectatorInput = allInputs.find(input => {
+        return input !== blueInput && input !== redInput;
       });
       
-      const spectator = spectatorInput?.value || "";
-      
-      return { blue, red, spectator };
+      return {
+        blue: blueInput?.value || "",
+        red: redInput?.value || "",
+        spectator: spectatorInput?.value || ""
+      };
     });
 
-    console.log('✅ Draft links extracted successfully:', {
+    console.log('✅ Draft links extracted:', {
       blue: links.blue ? '✓' : '✗',
       red: links.red ? '✓' : '✗', 
       spectator: links.spectator ? '✓' : '✗'
     });
-
-    // Validate we got all links
-    if (!links.blue || !links.red || !links.spectator) {
-      console.warn('⚠️ Some links are missing, trying alternative extraction...');
-      
-      // Alternative extraction method
-      const alternativeLinks = await page.evaluate(() => {
-        const inputs = Array.from(document.querySelectorAll('input[type=text]'));
-        const draftLinks = inputs.map(input => input.value).filter(url => 
-          url.includes('draftlol.dawe.gg')
-        );
-        
-        return {
-          blue: draftLinks.find(url => url.includes('blue')) || draftLinks[0] || "",
-          red: draftLinks.find(url => url.includes('red')) || draftLinks[1] || "",
-          spectator: draftLinks.find(url => !url.includes('blue') && !url.includes('red')) || draftLinks[2] || ""
-        };
-      });
-      
-      // Use alternative links if they're better
-      if (alternativeLinks.blue && alternativeLinks.red) {
-        return alternativeLinks;
-      }
-    }
 
     return links;
 
   } catch (error) {
     console.error('❌ Draft lobby creation failed:', error);
     
-    // Provide helpful error messages
-    if (error.name === 'TimeoutError') {
-      console.log('⏰ Timeout occurred - the page might be loading slowly');
-    }
-    
-    // Fallback: return placeholder links with error message
+    // Fallback with better error information
     return {
       blue: "https://draftlol.dawe.gg/",
       red: "https://draftlol.dawe.gg/", 
