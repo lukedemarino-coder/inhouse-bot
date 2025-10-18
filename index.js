@@ -3,7 +3,6 @@ require("dotenv").config();
 const fs = require("fs");
 const axios = require("axios");
 const cheerio = require("cheerio");
-const puppeteer = require('puppeteer');
 const {
   Client,
   GatewayIntentBits,
@@ -854,9 +853,8 @@ async function postRoleSelectionMessage(channel) {
 async function createDraftLolLobby() {  
   let browser;
   try {
-    console.log('🚀 Starting draft lobby creation...');
-    
-    // Simple configuration for Render
+  
+    // Configuration for Render environment
     const browserConfig = {
       headless: true,
       args: [
@@ -864,11 +862,43 @@ async function createDraftLolLobby() {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--single-process'
+        '--single-process',
+        '--no-zygote'
       ]
     };
 
-    console.log('🔧 Launching browser with built-in Chrome...');
+    // Try different possible Chrome locations
+    const possibleChromePaths = [
+      process.env.PUPPETEER_EXECUTABLE_PATH,
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/chromium',
+      '/snap/bin/chromium'
+    ];
+
+    // Find available Chrome executable
+    for (const chromePath of possibleChromePaths) {
+      if (chromePath) {
+        try {
+          const fs = require('fs');
+          if (fs.existsSync(chromePath)) {
+            browserConfig.executablePath = chromePath;
+            console.log(`✅ Found Chrome at: ${chromePath}`);
+            break;
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+    }
+
+    if (!browserConfig.executablePath) {
+      console.log('❌ No Chrome executable found, using fallback method');
+      return getFallbackDraftLinks();
+    }
+
+    console.log('🚀 Launching browser with config:', browserConfig);
     browser = await puppeteer.launch(browserConfig);
     
     const page = await browser.newPage();
@@ -883,66 +913,43 @@ async function createDraftLolLobby() {
       timeout: 30000 
     });
 
-    console.log('✅ Page loaded, waiting for create button...');
-    
-    // Wait for and click the create lobby button
+    console.log('🖱️ Clicking create lobby button...');
     await page.waitForSelector("div.sendButton", { timeout: 10000 });
     await page.click("div.sendButton");
     
-    console.log('🖱️ Create button clicked, waiting for lobby inputs...');
-    
-    // Wait for the lobby inputs to appear
+    console.log('⏳ Waiting for lobby inputs...');
     await page.waitForSelector(".createContainer input.inputBlue", { timeout: 10000 });
     await page.waitForSelector(".createContainer input.inputRed", { timeout: 10000 });
     
-    // Wait a bit more for all inputs to be populated
-    await page.waitForTimeout(2000);
-    
+    await page.waitForFunction(() => {
+      const container = document.querySelector(".createContainer");
+      if (!container) return false;
+      const inputs = Array.from(container.querySelectorAll("input[type=text]"));
+      return inputs.some((input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed"));
+    }, { timeout: 10000 });
+
     console.log('📝 Extracting draft links...');
-    
-    // Extract the links
     const links = await page.evaluate(() => {
       const container = document.querySelector(".createContainer");
       if (!container) return { blue: "", red: "", spectator: "" };
-      
-      const blueInput = container.querySelector(".inputBlue");
-      const redInput = container.querySelector(".inputRed");
-      
-      // Get all inputs and find the spectator one
-      const allInputs = Array.from(container.querySelectorAll("input[type=text]"));
-      const spectatorInput = allInputs.find(input => {
-        return input !== blueInput && input !== redInput;
-      });
-      
-      return {
-        blue: blueInput?.value || "",
-        red: redInput?.value || "",
-        spectator: spectatorInput?.value || ""
-      };
+      const blue = container.querySelector(".inputBlue")?.value || "";
+      const red = container.querySelector(".inputRed")?.value || "";
+      const inputs = Array.from(container.querySelectorAll("input[type=text]"));
+      const spectatorInput = inputs.find(
+        (input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed")
+      );
+      const spectator = spectatorInput?.value || "";
+      return { blue, red, spectator };
     });
 
-    console.log('✅ Draft links extracted:', {
-      blue: links.blue ? '✓' : '✗',
-      red: links.red ? '✓' : '✗', 
-      spectator: links.spectator ? '✓' : '✗'
-    });
-
+    console.log('✅ Draft links created successfully');
     return links;
 
   } catch (error) {
     console.error('❌ Draft lobby creation failed:', error);
-    
-    // Fallback with better error information
-    return {
-      blue: "https://draftlol.dawe.gg/",
-      red: "https://draftlol.dawe.gg/", 
-      spectator: "https://draftlol.dawe.gg/",
-      error: error.message
-    };
   } finally {
     if (browser) {
       await browser.close().catch(console.error);
-      console.log('🔒 Browser closed');
     }
   }
 }
@@ -3508,25 +3515,17 @@ async function makeTeams(channel) {
   }
 
   // --- Create Draft Lobby using draftlol.dawe.gg ---
-let blue = "", red = "", spectator = "";
+  let blue = "", red = "", spectator = "";
 
-try {
-  console.log('🎯 Creating draft lobby...');
-  const links = await createDraftLolLobby();
-  blue = links.blue;
-  red = links.red;
-  spectator = links.spectator;
-  
-  if (links.error) {
-    console.error('❌ Draft creation had errors:', links.error);
-    await channel.send(`⚠️ Draft lobby creation had issues: ${links.error}. Players may need to create draft manually.`);
-  } else {
-    console.log('✅ Draft links successfully created');
+  try {
+    const links = await createDraftLolLobby();
+    blue = links.blue;
+    red = links.red;
+    spectator = links.spectator;
+  } catch (err) {
+    console.error("Failed to create draft lobby:", err);
+    // Continue without draft links - we'll handle this in the message content
   }
-} catch (err) {
-  console.error("Failed to create draft lobby:", err);
-  await channel.send("❌ Failed to create draft lobby automatically. Please create draft manually at: https://draftlol.dawe.gg/");
-}
 
   // Create multiple action rows for better organization
   const draftRow = new ActionRowBuilder().addComponents(
@@ -3850,7 +3849,7 @@ async function endMatch(channel, winner, isVoided = false) {
 }
 
 // ---------------- READY ----------------
-const MAIN_GUILD_ID = "1421221145532956722";
+const MAIN_GUILD_ID = "1423242905602101310";
 
 client.once("ready", async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
