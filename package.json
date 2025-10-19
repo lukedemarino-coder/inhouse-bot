@@ -16,6 +16,6 @@
     "dotenv": "^17.2.2",
     "express": "^4.21.2",
     "mongodb": "^6.20.0",
-    "puppeteer-core": "^21.5.2",
+    "puppeteer-core": "^21.5.2"
   }
 }
