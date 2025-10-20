@@ -854,7 +854,12 @@ async function postRoleSelectionMessage(channel) {
 async function createDraftLolLobby() {  
   let browser;
   try {
-    // Configuration for Render environment
+    console.log('🚀 Starting draft lobby creation...');
+    
+    // Use puppeteer (not puppeteer-core)
+    const puppeteer = require('puppeteer');
+  
+    // Configuration for server environment
     const browserConfig = {
       headless: true,
       args: [
@@ -863,95 +868,98 @@ async function createDraftLolLobby() {
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--single-process',
-        '--no-zygote'
-      ]
+        '--no-zygote',
+        '--disable-web-security',
+        '--disable-features=site-per-process',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding'
+      ],
+      timeout: 30000
     };
 
-    // Try different possible Chrome locations
-    const possibleChromePaths = [
-      process.env.PUPPETEER_EXECUTABLE_PATH,
-      '/usr/bin/google-chrome',
-      '/usr/bin/google-chrome-stable',
-      '/usr/bin/chromium-browser',
-      '/usr/bin/chromium',
-      '/snap/bin/chromium'
-    ];
-
-    // Find available Chrome executable
-    for (const chromePath of possibleChromePaths) {
-      if (chromePath) {
-        try {
-          const fs = require('fs');
-          if (fs.existsSync(chromePath)) {
-            browserConfig.executablePath = chromePath;
-            console.log(`✅ Found Chrome at: ${chromePath}`);
-            break;
-          }
-        } catch (e) {
-          continue;
-        }
-      }
-    }
-
-    if (!browserConfig.executablePath) {
-      console.log('❌ No Chrome executable found, using fallback method');
-      return getFallbackDraftLinks();
-    }
-
-    console.log('🚀 Launching browser with config:', browserConfig);
+    console.log('🔧 Launching browser...');
     browser = await puppeteer.launch(browserConfig);
     
     const page = await browser.newPage();
     
-    // Set timeouts
-    await page.setDefaultNavigationTimeout(30000);
-    await page.setDefaultTimeout(15000);
+    // Set realistic timeouts
+    await page.setDefaultNavigationTimeout(45000);
+    await page.setDefaultTimeout(30000);
+    
+    // Set a realistic user agent
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
     console.log('🌐 Navigating to draftlol...');
     await page.goto("https://draftlol.dawe.gg/", { 
       waitUntil: 'networkidle0',
-      timeout: 30000 
+      timeout: 45000
     });
 
-    console.log('🖱️ Clicking create lobby button...');
-    await page.waitForSelector("div.sendButton", { timeout: 10000 });
+    console.log('🖱️ Waiting for create lobby button...');
+    // Wait for the button to be available and click it
+    await page.waitForSelector("div.sendButton", { timeout: 15000 });
     await page.click("div.sendButton");
     
-    console.log('⏳ Waiting for lobby inputs...');
-    await page.waitForSelector(".createContainer input.inputBlue", { timeout: 10000 });
-    await page.waitForSelector(".createContainer input.inputRed", { timeout: 10000 });
+    console.log('⏳ Waiting for lobby inputs to generate...');
+    // Wait for the inputs to appear with a longer timeout
+    await page.waitForSelector(".createContainer input.inputBlue", { timeout: 15000 });
+    await page.waitForSelector(".createContainer input.inputRed", { timeout: 15000 });
     
-    await page.waitForFunction(() => {
-      const container = document.querySelector(".createContainer");
-      if (!container) return false;
-      const inputs = Array.from(container.querySelectorAll("input[type=text]"));
-      return inputs.some((input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed"));
-    }, { timeout: 10000 });
-
+    // Additional wait to ensure all inputs are populated
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
     console.log('📝 Extracting draft links...');
     const links = await page.evaluate(() => {
       const container = document.querySelector(".createContainer");
-      if (!container) return { blue: "", red: "", spectator: "" };
-      const blue = container.querySelector(".inputBlue")?.value || "";
-      const red = container.querySelector(".inputRed")?.value || "";
+      if (!container) {
+        console.error('Container not found');
+        return { blue: "", red: "", spectator: "" };
+      }
+      
+      const blueInput = container.querySelector(".inputBlue");
+      const redInput = container.querySelector(".inputRed");
       const inputs = Array.from(container.querySelectorAll("input[type=text]"));
       const spectatorInput = inputs.find(
         (input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed")
       );
-      const spectator = spectatorInput?.value || "";
-      return { blue, red, spectator };
+      
+      return {
+        blue: blueInput?.value || "",
+        red: redInput?.value || "",
+        spectator: spectatorInput?.value || ""
+      };
     });
 
-    console.log('✅ Draft links created successfully');
+    console.log('✅ Draft links created successfully:', {
+      blue: links.blue ? '✓' : '✗',
+      red: links.red ? '✓' : '✗', 
+      spectator: links.spectator ? '✓' : '✗'
+    });
+
     return links;
 
   } catch (error) {
     console.error('❌ Draft lobby creation failed:', error);
+    // Return fallback links that allow manual draft creation
+    return getFallbackDraftLinks();
   } finally {
     if (browser) {
       await browser.close().catch(console.error);
     }
   }
+}
+
+// Enhanced fallback function
+function getFallbackDraftLinks() {
+  console.log('🔄 Using fallback draft links');
+  // Return empty links but with a message about manual creation
+  return {
+    blue: "",
+    red: "", 
+    spectator: "",
+    fallback: true
+  };
 }
 
 client.rest.on('rateLimited', (rateLimitInfo) => {
