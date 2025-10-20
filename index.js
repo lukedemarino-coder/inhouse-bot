@@ -3885,7 +3885,6 @@ client.once("ready", async () => {
   await postQueueMessage(queueChannel);
   
   console.log('✅ Bot fully initialized with data loaded');
-<<<<<<< HEAD
 });
 
 // ---------------- WEB SERVER FOR RENDER ----------------
