@@ -855,11 +855,13 @@ async function postRoleSelectionMessage(channel) {
 async function createDraftLolLobby() {
   let browser = null;
   try {
+    console.log('🔄 Launching Puppeteer browser for draftlol.dawe.gg...');
+
     // Launch the browser using the bundled Chromium
     browser = await puppeteer.launch({
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(), // This is the key part
+      executablePath: await chromium.executablePath(),
       headless: chromium.headless,
       ignoreHTTPSErrors: true,
     });
@@ -906,8 +908,8 @@ async function createDraftLolLobby() {
       return inputs.some((input) => !input.classList.contains('inputBlue') && !input.classList.contains('inputRed'));
     }, { timeout: 10000 });
     
-    // Wait a bit more to ensure all links are populated
-    await page.waitForTimeout(2000);
+    // Wait a bit more to ensure all links are populated - FIXED: Use setTimeout instead of waitForTimeout
+    await new Promise(resolve => setTimeout(resolve, 2000));
     
     // Grab all three links from the input fields
     console.log('📋 Extracting draft links...');
@@ -956,11 +958,13 @@ async function createDraftLolLobby() {
     };
 
   } catch (error) {
-    console.error('❌ Puppeteer error:', error);
+    console.error('❌ Puppeteer error creating draft lobby:', error);
     throw new Error('Make draft links manually at https://draftlol.dawe.gg');
   } finally {
+    // Always close the browser
     if (browser) {
-      await browser.close();
+      await browser.close().catch(console.error);
+      console.log('🔒 Browser closed');
     }
   }
 }
@@ -3495,7 +3499,12 @@ async function makeTeams(channel) {
 
   // --- Create Draft Lobby using draftlol.dawe.gg ---
   let draftSuccess = false;
-  let draftLinks = null;
+  let draftLinks = {
+    blue: "https://draftlol.dawe.gg",
+    red: "https://draftlol.dawe.gg", 
+    spectator: "https://draftlol.dawe.gg",
+    lobby: "https://draftlol.dawe.gg"
+  };
 
   try {
     console.log("🔄 Starting draft lobby creation...");
@@ -3509,7 +3518,7 @@ async function makeTeams(channel) {
 
   // Build components based on draft success
   const components = [];
-  
+
   if (draftSuccess) {
     // Create draft buttons with actual links
     const lobbyRow = new ActionRowBuilder().addComponents(
@@ -3555,27 +3564,27 @@ async function makeTeams(channel) {
   if (draftSuccess) {
     embedDescription = `**Draft Lobby Successfully Created! 🎉**
 
-**Step 1: Share Links with Your Team**
-🔵 **Blue Team:** [Click to join Blue Draft](${draftLinks.blue})
-🔴 **Red Team:** [Click to join Red Draft](${draftLinks.red})  
-👁️ **Spectators:** [Spectator Link](${draftLinks.spectator})
+  **Step 1: Share Links with Your Team**
+  🔵 **Blue Team:** [Click to join Blue Draft](${draftLinks.blue})
+  🔴 **Red Team:** [Click to join Red Draft](${draftLinks.red})  
+  👁️ **Spectators:** [Spectator Link](${draftLinks.spectator})
 
-**Step 2: Join Your Respective Links**
-- Blue team players use the **Blue link**
-- Red team players use the **Red link** 
-- Coaches/casters use the **Spectator link**
+  **Step 2: Join Your Respective Links**
+  - Blue team players use the **Blue link**
+  - Red team players use the **Red link** 
+  - Coaches/casters use the **Spectator link**
 
-**Need Help?** Ask in this channel!`;
+  **Need Help?** Ask in this channel!`;
   } else {
     embedDescription = `**Manual Draft Setup Required**
 
-Due to technical issues, please visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create a draft lobby manually.
+  Due to technical issues, please visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create a draft lobby manually.
 
-1. Visit: https://draftlol.dawe.gg
-2. Click "Create Lobby"  
-3. Share the generated links with your team
+  1. Visit: https://draftlol.dawe.gg
+  2. Click "Create Lobby"  
+  3. Share the generated links with your team
 
-**Need Help?** Ask in this channel!`;
+  **Need Help?** Ask in this channel!`;
   }
 
   const matchEmbed = new EmbedBuilder()
