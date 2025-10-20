@@ -856,58 +856,31 @@ async function createDraftLolLobby() {
   try {
     console.log('🚀 Starting draft lobby creation...');
     
-    // Use puppeteer (not puppeteer-core)
     const puppeteer = require('puppeteer');
-  
-    // Try multiple browser paths
-    const browserPaths = [
-      '/usr/bin/google-chrome',
-      '/usr/bin/chromium-browser',
-      '/usr/bin/chromium',
-      process.env.PUPPETEER_EXECUTABLE_PATH
-    ].filter(Boolean);
 
-    console.log('🔍 Checking for available browsers...');
-    
-    let executablePath = null;
-    const fs = require('fs');
-    
-    for (const path of browserPaths) {
-      if (fs.existsSync(path)) {
-        console.log(`✅ Found browser at: ${path}`);
-        executablePath = path;
-        break;
-      } else {
-        console.log(`❌ Browser not found at: ${path}`);
-      }
-    }
-
-    if (!executablePath) {
-      console.log('❌ No browser found, using fallback');
-      return getFallbackDraftLinks();
-    }
-
-    // Configuration for Render environment
+    // Configuration that works on Render
     const browserConfig = {
       headless: 'new', // Use new headless mode
-      executablePath: executablePath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--single-process',
-        '--no-zygote'
+        '--no-zygote',
+        '--disable-web-security',
+        '--disable-features=site-per-process',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--remote-debugging-port=0', // Use random port
+        '--window-size=1920,1080'
       ],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH, // Let Puppeteer handle this
       timeout: 30000
     };
 
-    console.log('🔧 Launching browser with config:', {
-      executablePath: browserConfig.executablePath,
-      headless: browserConfig.headless,
-      argsCount: browserConfig.args.length
-    });
-
+    console.log('🔧 Launching browser with Puppeteer built-in Chromium...');
     browser = await puppeteer.launch(browserConfig);
     console.log('✅ Browser launched successfully');
     
