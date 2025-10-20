@@ -861,48 +861,41 @@ function generateRandomDraftLinks() {
   }
 
   const spectatorCode = generateRandomString(8);
+  const lobbyCode = generateRandomString(8); // This is the "for nothing" random string
   const blueCode = generateRandomString(8);
   const redCode = generateRandomString(8);
   
-  // According to your description, the format is:
-  // draftlol.dawe.gg/spectator/blue/red
   const baseUrl = 'https://draftlol.dawe.gg';
   
+  // Create the 4-part lobby URL first
+  const lobbyUrl = `${baseUrl}/${spectatorCode}/${lobbyCode}/${blueCode}/${redCode}`;
+  
   return {
-    spectator: `${baseUrl}/${spectatorCode}`,
-    blue: `${baseUrl}/${spectatorCode}/${blueCode}`,
-    red: `${baseUrl}/${spectatorCode}/${redCode}`
+    lobby: lobbyUrl, // The full 4-part URL to create the lobby
+    spectator: `${baseUrl}/${spectatorCode}`, // Spectator link
+    blue: `${baseUrl}/${spectatorCode}/${blueCode}`, // Blue draft link
+    red: `${baseUrl}/${spectatorCode}/${redCode}` // Red draft link
   };
 }
 
-// Replace the createDraftLolLobby function with this simple version
+// Update the createDraftLolLobby function
 async function createDraftLolLobby() {
   try {
-    console.log('🔄 Generating draft links with random URLs');
-    return generateRandomDraftLinks();
+    console.log('🔄 Generating draft links with 4-part URL format');
+    const links = generateRandomDraftLinks();
+    
+    // Log the structure for debugging
+    console.log('📋 Generated links structure:');
+    console.log(`   Lobby: ${links.lobby}`);
+    console.log(`   Spectator: ${links.spectator}`);
+    console.log(`   Blue: ${links.blue}`);
+    console.log(`   Red: ${links.red}`);
+    
+    return links;
   } catch (error) {
     console.error("Error generating draft links:", error);
-    return getFallbackDraftLinks();
+    return generateRandomDraftLinks(); // Fallback to same method
   }
-}
-
-// Keep the fallback function but simplify it
-function getFallbackDraftLinks() {
-  console.log('🔄 Using fallback draft links');
-  return generateRandomDraftLinks();
-}
-
-
-// Enhanced fallback function
-function getFallbackDraftLinks() {
-  console.log('🔄 Using fallback draft links');
-  // Return empty links but with a message about manual creation
-  return {
-    blue: "",
-    red: "", 
-    spectator: "",
-    fallback: true
-  };
 }
 
 client.rest.on('rateLimited', (rateLimitInfo) => {
@@ -3479,18 +3472,21 @@ async function makeTeams(channel) {
   }
 
   // --- Create Draft Lobby using draftlol.dawe.gg ---
-  let blue = "", red = "", spectator = "";
+  let blue = "", red = "", spectator = "", lobbyUrl = "";
 
   try {
     const links = await createDraftLolLobby();
     blue = links.blue;
     red = links.red;
     spectator = links.spectator;
-    console.log(`✅ Generated draft links: Spectator: ${spectator}, Blue: ${blue}, Red: ${red}`);
+    lobbyUrl = links.lobby; // The 4-part URL to create the lobby
+    
+    console.log(`✅ Generated 4-part lobby URL: ${lobbyUrl}`);
   } catch (err) {
     console.error("Failed to generate draft links:", err);
-    // Continue with empty links - we'll handle this in the message content
+    // Continue without draft links
   }
+
 
   // Create multiple action rows for better organization
   const draftRow = new ActionRowBuilder().addComponents(
@@ -3520,9 +3516,18 @@ async function makeTeams(channel) {
     .setStyle(ButtonStyle.Success)
   );
 
+  // In the matchEmbed, add the lobby URL information:
   const matchEmbed = new EmbedBuilder()
   .setTitle("🎮 Match Lobby")
   .setDescription(`Welcome to your match! Use the buttons below to access draft links and manage the match.
+
+  **First, create the lobby by visiting this URL:**
+  🔗 [Create Lobby](${lobbyUrl})
+
+  **Then use these draft links:**
+  👁️ Spectator: [Click for Spectator Link](${spectator})
+  🟦 Blue Team: [Click for Blue Draft](${blue})  
+  🟥 Red Team: [Click for Red Draft](${red})
 
   **Assigned Drafters:**
   🔵 Blue Team: <@${team1TopElo}> (Highest Elo)
