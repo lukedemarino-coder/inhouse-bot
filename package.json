@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node -e \"process.env.PORT = process.env.PORT || '10000'; require('./index.js')\""
+    "start": "node index.js",
+    "install-deps": "npm install"
   },
   "keywords": [],
   "author": "",
