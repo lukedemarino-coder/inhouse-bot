@@ -3416,16 +3416,29 @@ async function makeTeams(channel) {
     ]
   });
 
-  // Create match text channel
+  // Create match text channel - MAKE PRIVATE
   const matchChannel = await guild.channels.create({ 
     name: "match-lobby", 
     type: 0, 
     parent: matchCategory.id,
     permissionOverwrites: [
       {
-        id: guild.id,
-        allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory']
-      }
+        id: guild.id, // @everyone
+        deny: ['ViewChannel'] // CHANGE: Deny view for everyone
+      },
+      // Allow match participants to view and send messages
+      ...bestTeam1.map(playerId => ({
+        id: playerId,
+        type: 1,
+        allow: [/*'ViewChannel',*/ 'SendMessages', 'ReadMessageHistory'],
+        deny: ['ViewChannel']
+      })),
+      ...bestTeam2.map(playerId => ({
+        id: playerId,
+        type: 1,
+        allow: [/*'ViewChannel'*/, 'SendMessages', 'ReadMessageHistory'],
+        deny: ['ViewChannel']
+      }))
     ]
   });
 
