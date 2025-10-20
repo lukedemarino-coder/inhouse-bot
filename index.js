@@ -851,99 +851,38 @@ async function postRoleSelectionMessage(channel) {
   }
 }
 
-async function createDraftLolLobby() {  
-  let browser;
-  try {
-    console.log('🚀 Starting draft lobby creation...');
-    
-    const puppeteer = require('puppeteer');
-
-    // Configuration for Render with installed Chromium
-    const browserConfig = {
-      headless: 'new', // Use new headless mode
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox', 
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--single-process',
-        '--no-zygote',
-        '--remote-debugging-port=0'
-      ],
-      timeout: 30000
-    };
-
-    console.log('🔧 Launching Chromium...');
-    browser = await puppeteer.launch(browserConfig);
-    console.log('✅ Browser launched successfully');
-    
-    const page = await browser.newPage();
-    
-    // Set realistic timeouts
-    await page.setDefaultNavigationTimeout(45000);
-    await page.setDefaultTimeout(30000);
-    
-    // Set a realistic user agent
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-    
-    console.log('🌐 Navigating to draftlol...');
-    await page.goto("https://draftlol.dawe.gg/", { 
-      waitUntil: 'networkidle0',
-      timeout: 45000
-    });
-
-    console.log('🖱️ Waiting for create lobby button...');
-    // Wait for the button to be available and click it
-    await page.waitForSelector("div.sendButton", { timeout: 15000 });
-    await page.click("div.sendButton");
-    
-    console.log('⏳ Waiting for lobby inputs to generate...');
-    // Wait for the inputs to appear with a longer timeout
-    await page.waitForSelector(".createContainer input.inputBlue", { timeout: 15000 });
-    await page.waitForSelector(".createContainer input.inputRed", { timeout: 15000 });
-    
-    // Additional wait to ensure all inputs are populated
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    console.log('📝 Extracting draft links...');
-    const links = await page.evaluate(() => {
-      const container = document.querySelector(".createContainer");
-      if (!container) {
-        console.error('Container not found');
-        return { blue: "", red: "", spectator: "" };
-      }
-      
-      const blueInput = container.querySelector(".inputBlue");
-      const redInput = container.querySelector(".inputRed");
-      const inputs = Array.from(container.querySelectorAll("input[type=text]"));
-      const spectatorInput = inputs.find(
-        (input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed")
-      );
-      
-      return {
-        blue: blueInput?.value || "",
-        red: redInput?.value || "",
-        spectator: spectatorInput?.value || ""
-      };
-    });
-
-    console.log('✅ Draft links created successfully:', {
-      blue: links.blue ? '✓' : '✗',
-      red: links.red ? '✓' : '✗', 
-      spectator: links.spectator ? '✓' : '✗'
-    });
-
-    return links;
-
-  } catch (error) {
-    console.error('❌ Draft lobby creation failed:', error);
-    // Return fallback links that allow manual draft creation
-    return getFallbackDraftLinks();
-  } finally {
-    if (browser) {
-      await browser.close().catch(console.error);
-    }
-  }
+async function createDraftLolLobby() {
+  const browser = await puppeteer.launch({ headless: true });
+  const page = await browser.newPage();
+  await page.goto("https://draftlol.dawe.gg/");
+  // Click "Create Lobby"
+  await page.waitForSelector("div.sendButton");
+  await page.click("div.sendButton");
+  // Wait for blue and red inputs
+  await page.waitForSelector(".createContainer input.inputBlue");
+  await page.waitForSelector(".createContainer input.inputRed");
+  // Wait for spectator input (any input that is not blue or red)
+  await page.waitForFunction(() => {
+    const container = document.querySelector(".createContainer");
+    if (!container) return false;
+    const inputs = Array.from(container.querySelectorAll("input[type=text]"));
+    return inputs.some((input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed"));
+  });
+  // Grab all three links
+  const links = await page.evaluate(() => {
+    const container = document.querySelector(".createContainer");
+    if (!container) return { blue: "", red: "", spectator: "" };
+    const blue = container.querySelector(".inputBlue")?.value || "";
+    const red = container.querySelector(".inputRed")?.value || "";
+    const inputs = Array.from(container.querySelectorAll("input[type=text]"));
+    const spectatorInput = inputs.find(
+      (input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed")
+    );
+    const spectator = spectatorInput?.value || "";
+    return { blue, red, spectator };
+  });
+  await browser.close();
+  return links;
 }
 
 // Enhanced fallback function
@@ -3868,43 +3807,7 @@ async function endMatch(channel, winner, isVoided = false) {
 // ---------------- READY ----------------
 const MAIN_GUILD_ID = "1423242905602101310";
 
-async function verifyChromiumInstallation() {
-  const fs = require('fs');
-  const { execSync } = require('child_process');
-  
-  console.log('🔍 Verifying Chromium installation...');
-  
-  try {
-    // Check if puppeteer browsers command works
-    console.log('📦 Checking installed browsers...');
-    const browsers = execSync('npx puppeteer browsers list', { encoding: 'utf8' });
-    console.log('✅ Installed browsers:', browsers);
-    
-    // Check cache directory
-    const cachePath = '/opt/render/.cache/puppeteer';
-    console.log(`📁 Cache path exists: ${fs.existsSync(cachePath)}`);
-    
-    if (fs.existsSync(cachePath)) {
-      const files = execSync(`find ${cachePath} -name "chrome" -type f`, { encoding: 'utf8' });
-      console.log('🔍 Found Chrome executables:', files.split('\n').filter(Boolean));
-    }
-    
-  } catch (error) {
-    console.log('❌ Verification failed:', error.message);
-    
-    // Try to install Chromium if not found
-    try {
-      console.log('📥 Attempting to install Chromium...');
-      execSync('npx puppeteer browsers install chrome', { stdio: 'inherit' });
-      console.log('✅ Chromium installation completed');
-    } catch (installError) {
-      console.log('❌ Chromium installation failed:', installError.message);
-    }
-  }
-}
-
 client.once("ready", async () => {
-  await verifyChromiumInstallation();
   console.log(`✅ Logged in as ${client.user.tag}`);
   
   // Connect to MongoDB first
