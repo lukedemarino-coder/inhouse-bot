@@ -3926,43 +3926,4 @@ process.on('SIGTERM', () => {
   process.exit(0);
 });
 
-// ---------------- WEB SERVER FOR RENDER ----------------
-const express = require('express');
-const app = express();
-const port = process.env.PORT || 3000;
-
-// Simple health check endpoint for UptimeRobot
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK', 
-    message: 'Discord bot is running',
-    timestamp: new Date().toISOString(),
-    guilds: client.guilds?.cache?.size || 0,
-    uptime: process.uptime()
-  });
-});
-
-// Root endpoint
-app.get('/', (req, res) => {
-  res.status(200).json({
-    status: 'Online',
-    service: 'Discord Bot',
-    guilds: client.guilds?.cache?.size || 0,
-    uptime: process.uptime()
-  });
-});
-
-// Start the web server
-app.listen(port, '0.0.0.0', () => {
-  console.log(`🟢 Web server running on port ${port}`);
-  console.log(`🔗 Health check available at: http://0.0.0.0:${port}/health`);
-});
-
-// Handle graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  client.destroy();
-  process.exit(0);
-});
-
 client.login(process.env.BOT_TOKEN);
