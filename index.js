@@ -3610,7 +3610,7 @@ async function makeTeams(channel) {
   };
 
   // Only add content if draft links failed
-  if (!blue || !red || !spectator) {
+  if (!draftLinks.blue || !draftLinks.red || !draftLinks.spectator) {
     messageOptions.content = `❌ Failed to create draft lobby. Players will need to make draft manually.`;
   }
 
@@ -3623,14 +3623,14 @@ async function makeTeams(channel) {
     team2VC,
     team1Roles,
     team2Roles,
-    blue, 
-    red, 
-    spectator,
-    matchId: matchId, // Store the match ID
+    blue: draftLinks.blue,        // ✅ Fix: use draftLinks.blue
+    red: draftLinks.red,          // ✅ Fix: use draftLinks.red  
+    spectator: draftLinks.spectator, // ✅ Fix: use draftLinks.spectator
+    matchId: matchId,
     matchMessageId: null,
     votes: {
-      team1: new Set(), // Players who voted for team 1
-      team2: new Set()  // Players who voted for team 2
+      team1: new Set(),
+      team2: new Set()
     }
   };
 
