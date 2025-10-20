@@ -1131,6 +1131,38 @@ client.on("interactionCreate", async (interaction) => {
   // ---------------- BUTTONS ----------------
   if (interaction.isButton()) {
     const id = interaction.user.id;
+    if (interaction.component?.style === ButtonStyle.Link) {
+      // Find the match for this channel
+      const match = matches.get(interaction.channelId);
+      if (!match || !match.drafters) return;
+      
+      const userId = interaction.user.id;
+      
+      // Check if user is allowed to use this draft link
+      const isBlueDrafter = userId === match.drafters.blue;
+      const isRedDrafter = userId === match.drafters.red;
+      
+      if (interaction.component.url === match.blue && !isBlueDrafter) {
+        return interaction.reply({
+          content: "❌ Only the assigned blue team drafter can use this link.",
+          ephemeral: true
+        });
+      }
+      
+      if (interaction.component.url === match.red && !isRedDrafter) {
+        return interaction.reply({
+          content: "❌ Only the assigned red team drafter can use this link.",
+          ephemeral: true
+        });
+      }
+      
+      // Allow spectators and drafters to proceed
+      return interaction.reply({
+        content: "✅ Opening draft link...",
+        ephemeral: true
+      });
+    }
+    
     // --- Report Win Buttons ---
     if (interaction.customId === 'open_role_selection') {
         try {
@@ -3520,7 +3552,21 @@ async function makeTeams(channel) {
   const components = [];
 
   if (draftSuccess) {
-    // Create draft buttons with actual links
+    // Get highest Elo players for each team
+    const team1HighestElo = team1Sorted[0];
+    const team2HighestElo = team2Sorted[0];
+    
+    const team1HighestPlayer = playerData[team1HighestElo];
+    const team2HighestPlayer = playerData[team2HighestElo];
+    
+    const team1HighestDisplay = team1HighestPlayer ? 
+      `${team1HighestPlayer.rank} ${team1HighestPlayer.division || ''} ${team1HighestPlayer.lp}LP` : 
+      "Unknown";
+    const team2HighestDisplay = team2HighestPlayer ? 
+      `${team2HighestPlayer.rank} ${team2HighestPlayer.division || ''} ${team2HighestPlayer.lp}LP` : 
+      "Unknown";
+
+    // Create draft buttons - ONLY show to highest Elo players
     const lobbyRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setLabel('🎮 CREATE LOBBY (Click This First!)')
@@ -3528,22 +3574,36 @@ async function makeTeams(channel) {
         .setURL(draftLinks.lobby)
     );
 
+    // Blue team draft button - only for highest Elo blue player
+    const blueDraftButton = new ButtonBuilder()
+      .setLabel('🟦 Blue Team Draft')
+      .setStyle(ButtonStyle.Link)
+      .setURL(draftLinks.blue);
+
+    // Red team draft button - only for highest Elo red player  
+    const redDraftButton = new ButtonBuilder()
+      .setLabel('🔴 Red Team Draft')
+      .setStyle(ButtonStyle.Link)
+      .setURL(draftLinks.red);
+
+    const spectatorButton = new ButtonBuilder()
+      .setLabel('👁️ Spectator View')
+      .setStyle(ButtonStyle.Link)
+      .setURL(draftLinks.spectator);
+
     const teamRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setLabel('🟦 Blue Team Draft')
-        .setStyle(ButtonStyle.Link)
-        .setURL(draftLinks.blue),
-      new ButtonBuilder()
-        .setLabel('🔴 Red Team Draft')
-        .setStyle(ButtonStyle.Link)
-        .setURL(draftLinks.red),
-      new ButtonBuilder()
-        .setLabel('👁️ Spectator View')
-        .setStyle(ButtonStyle.Link)
-        .setURL(draftLinks.spectator)
+      blueDraftButton,
+      redDraftButton,
+      spectatorButton
     );
 
     components.push(lobbyRow, teamRow);
+    
+    // Store which players should have access to draft links
+    matchData.drafters = {
+      blue: team1HighestElo,
+      red: team2HighestElo
+    };
   }
 
   const managementRow = new ActionRowBuilder().addComponents(
@@ -3559,32 +3619,30 @@ async function makeTeams(channel) {
 
   components.push(managementRow);
 
-  // Create embed based on draft success
-  let embedDescription;
+  // Create embed with assigned drafters
+  let embedDescription = "";
+
   if (draftSuccess) {
-    embedDescription = `**Draft Lobby Successfully Created! 🎉**
+    // Get highest Elo players for display
+    const team1HighestElo = team1Sorted[0];
+    const team2HighestElo = team2Sorted[0];
+    
+    const team1HighestPlayer = playerData[team1HighestElo];
+    const team2HighestPlayer = playerData[team2HighestElo];
+    
+    const team1HighestDisplay = team1HighestPlayer ? 
+      `${team1HighestPlayer.rank} ${team1HighestPlayer.division || ''} ${team1HighestPlayer.lp}LP` : 
+      "Unknown";
+    const team2HighestDisplay = team2HighestPlayer ? 
+      `${team2HighestPlayer.rank} ${team2HighestPlayer.division || ''} ${team2HighestPlayer.lp}LP` : 
+      "Unknown";
 
-  **Step 1: Share Links with Your Team**
-  🔵 **Blue Team:** [Click to join Blue Draft](${draftLinks.blue})
-  🔴 **Red Team:** [Click to join Red Draft](${draftLinks.red})  
-  👁️ **Spectators:** [Spectator Link](${draftLinks.spectator})
-
-  **Step 2: Join Your Respective Links**
-  - Blue team players use the **Blue link**
-  - Red team players use the **Red link** 
-  - Coaches/casters use the **Spectator link**
-
-  **Need Help?** Ask in this channel!`;
+    embedDescription = `**Assigned Drafters:**\n` +
+      `🔵 Blue: <@${team1HighestElo}> (${team1HighestDisplay})\n` +
+      `🔴 Red: <@${team2HighestElo}> (${team2HighestDisplay})\n\n` +
+      `*Only assigned drafters should click their team's draft links*`;
   } else {
-    embedDescription = `**Manual Draft Setup Required**
-
-  Due to technical issues, please visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create a draft lobby manually.
-
-  1. Visit: https://draftlol.dawe.gg
-  2. Click "Create Lobby"  
-  3. Share the generated links with your team
-
-  **Need Help?** Ask in this channel!`;
+    embedDescription = `**Manual Draft Setup Required**\n\nPlease visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create a draft lobby manually.`;
   }
 
   const matchEmbed = new EmbedBuilder()
@@ -3610,7 +3668,7 @@ async function makeTeams(channel) {
   };
 
   // Only add content if draft links failed
-  if (!draftLinks.blue || !draftLinks.red || !draftLinks.spectator) {
+  if (!draftSuccess) {
     messageOptions.content = `❌ Failed to create draft lobby. Players will need to make draft manually.`;
   }
 
@@ -3623,15 +3681,19 @@ async function makeTeams(channel) {
     team2VC,
     team1Roles,
     team2Roles,
-    blue: draftLinks.blue,        // ✅ Fix: use draftLinks.blue
-    red: draftLinks.red,          // ✅ Fix: use draftLinks.red  
-    spectator: draftLinks.spectator, // ✅ Fix: use draftLinks.spectator
+    blue: draftLinks.blue,
+    red: draftLinks.red,
+    spectator: draftLinks.spectator,
     matchId: matchId,
     matchMessageId: null,
     votes: {
       team1: new Set(),
       team2: new Set()
-    }
+    },
+    drafters: draftSuccess ? {
+      blue: team1Sorted[0], // Highest Elo blue player
+      red: team2Sorted[0]   // Highest Elo red player
+    } : null
   };
 
   // Send the message
