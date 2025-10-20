@@ -3566,14 +3566,6 @@ async function makeTeams(channel) {
       `${team2HighestPlayer.rank} ${team2HighestPlayer.division || ''} ${team2HighestPlayer.lp}LP` : 
       "Unknown";
 
-    // Create draft buttons - ONLY show to highest Elo players
-    const lobbyRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setLabel('🎮 CREATE LOBBY (Click This First!)')
-        .setStyle(ButtonStyle.Link)
-        .setURL(draftLinks.lobby)
-    );
-
     // Blue team draft button - only for highest Elo blue player
     const blueDraftButton = new ButtonBuilder()
       .setLabel('🟦 Blue Team Draft')
@@ -3597,7 +3589,7 @@ async function makeTeams(channel) {
       spectatorButton
     );
 
-    components.push(lobbyRow, teamRow);
+    components.push(teamRow);
   }
 
   const managementRow = new ActionRowBuilder().addComponents(
@@ -3631,10 +3623,10 @@ async function makeTeams(channel) {
       `${team2HighestPlayer.rank} ${team2HighestPlayer.division || ''} ${team2HighestPlayer.lp}LP` : 
       "Unknown";
 
-    embedDescription = `**Assigned Drafters:**\n` +
-      `🔵 Blue: <@${team1HighestElo}> (${team1HighestDisplay})\n` +
-      `🔴 Red: <@${team2HighestElo}> (${team2HighestDisplay})\n\n` +
-      `*Only assigned drafters should click their team's draft links*`;
+    embedDescription = `**Assigned Drafters(Highest Elo):**\n` +
+      `🔵 Blue Team: <@${team1HighestElo}> (${team1HighestDisplay})\n` +
+      `🔴 Red Team: <@${team2HighestElo}> (${team2HighestDisplay})\n\n` +
+      `**Once the match ends, use the Team Won buttons to score the game need 6/10 votes**`;
   } else {
     embedDescription = `**Manual Draft Setup Required**\n\nPlease visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create a draft lobby manually.`;
   }
