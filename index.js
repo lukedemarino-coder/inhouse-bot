@@ -852,37 +852,64 @@ async function postRoleSelectionMessage(channel) {
 }
 
 async function createDraftLolLobby() {
-  const browser = await puppeteer.launch({ headless: true });
+  // For Render environment, use these specific launch options
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+      '--disable-gpu'
+    ],
+    executablePath: process.env.CHROME_PATH || '/usr/bin/chromium-browser' // Common path on many systems
+  });
+  
   const page = await browser.newPage();
-  await page.goto("https://draftlol.dawe.gg/");
-  // Click "Create Lobby"
-  await page.waitForSelector("div.sendButton");
-  await page.click("div.sendButton");
-  // Wait for blue and red inputs
-  await page.waitForSelector(".createContainer input.inputBlue");
-  await page.waitForSelector(".createContainer input.inputRed");
-  // Wait for spectator input (any input that is not blue or red)
-  await page.waitForFunction(() => {
-    const container = document.querySelector(".createContainer");
-    if (!container) return false;
-    const inputs = Array.from(container.querySelectorAll("input[type=text]"));
-    return inputs.some((input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed"));
-  });
-  // Grab all three links
-  const links = await page.evaluate(() => {
-    const container = document.querySelector(".createContainer");
-    if (!container) return { blue: "", red: "", spectator: "" };
-    const blue = container.querySelector(".inputBlue")?.value || "";
-    const red = container.querySelector(".inputRed")?.value || "";
-    const inputs = Array.from(container.querySelectorAll("input[type=text]"));
-    const spectatorInput = inputs.find(
-      (input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed")
-    );
-    const spectator = spectatorInput?.value || "";
-    return { blue, red, spectator };
-  });
-  await browser.close();
-  return links;
+  
+  try {
+    await page.goto("https://draftlol.dawe.gg/", { waitUntil: 'networkidle2', timeout: 30000 });
+    
+    // Wait for and click "Create Lobby"
+    await page.waitForSelector("div.sendButton", { timeout: 10000 });
+    await page.click("div.sendButton");
+    
+    // Wait for inputs to appear
+    await page.waitForSelector(".createContainer input.inputBlue", { timeout: 10000 });
+    await page.waitForSelector(".createContainer input.inputRed", { timeout: 10000 });
+    
+    // Wait for spectator input
+    await page.waitForFunction(() => {
+      const container = document.querySelector(".createContainer");
+      if (!container) return false;
+      const inputs = Array.from(container.querySelectorAll("input[type=text]"));
+      return inputs.some((input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed"));
+    }, { timeout: 10000 });
+
+    // Grab all three links
+    const links = await page.evaluate(() => {
+      const container = document.querySelector(".createContainer");
+      if (!container) return { blue: "", red: "", spectator: "" };
+      const blue = container.querySelector(".inputBlue")?.value || "";
+      const red = container.querySelector(".inputRed")?.value || "";
+      const inputs = Array.from(container.querySelectorAll("input[type=text]"));
+      const spectatorInput = inputs.find(
+        (input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed")
+      );
+      const spectator = spectatorInput?.value || "";
+      return { blue, red, spectator };
+    });
+
+    return links;
+  } catch (error) {
+    console.error("Error creating draft lobby:", error);
+    return getFallbackDraftLinks();
+  } finally {
+    await browser.close().catch(console.error);
+  }
 }
 
 // Enhanced fallback function
