@@ -853,13 +853,9 @@ async function postRoleSelectionMessage(channel) {
 async function createDraftLolLobby() {  
   let browser;
   try {
-<<<<<<< HEAD
     // Use puppeteer-core with system Chrome
     const puppeteer = require('puppeteer-core');
-    
-=======
   
->>>>>>> 8b442d3f85d89e1adb361ff7e490be4d776230aa
     // Configuration for Render environment
     const browserConfig = {
       headless: true,
