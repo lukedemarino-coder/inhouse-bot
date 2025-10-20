@@ -3890,40 +3890,59 @@ client.once("ready", async () => {
 // ---------------- WEB SERVER FOR RENDER ----------------
 const express = require('express');
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 10000; // Use 10000 to match your logs
 
-// Simple health check endpoint for UptimeRobot
+// Add request logging to debug health checks
+app.use((req, res, next) => {
+  console.log(`🌐 ${req.method} ${req.path} - ${new Date().toISOString()}`);
+  next();
+});
+
+// Enhanced health check with better error handling
 app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK', 
-    message: 'Discord bot is running',
-    timestamp: new Date().toISOString(),
-    guilds: client.guilds?.cache?.size || 0,
-    uptime: process.uptime()
-  });
+  try {
+    const healthData = {
+      status: 'OK',
+      message: 'Discord bot is running',
+      timestamp: new Date().toISOString(),
+      guilds: client.guilds?.cache?.size || 0,
+      uptime: process.uptime(),
+      queueSize: queue?.length || 0,
+      activeMatches: matches?.size || 0,
+      readyCheckActive: !!activeReadyCheck
+    };
+    
+    console.log(`🏥 Health check called - ${healthData.guilds} guilds, ${healthData.queueSize} in queue`);
+    
+    res.status(200).json(healthData);
+  } catch (error) {
+    console.error('❌ Health check error:', error);
+    res.status(500).json({ 
+      status: 'ERROR', 
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
-// Root endpoint
+// Root endpoint with redirect to health
 app.get('/', (req, res) => {
-  res.status(200).json({
-    status: 'Online',
-    service: 'Discord Bot',
-    guilds: client.guilds?.cache?.size || 0,
-    uptime: process.uptime()
-  });
+  res.redirect('/health');
 });
 
-// Start the web server
-app.listen(port, '0.0.0.0', () => {
+// Start the web server with better error handling
+const server = app.listen(port, '0.0.0.0', () => {
   console.log(`🟢 Web server running on port ${port}`);
   console.log(`🔗 Health check available at: http://0.0.0.0:${port}/health`);
+  console.log(`🌐 Public URL: https://${process.env.RENDER_SERVICE_NAME}.onrender.com/health`);
 });
 
-// Handle graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  client.destroy();
-  process.exit(0);
+// Handle server errors
+server.on('error', (error) => {
+  console.error('❌ Server error:', error);
+  if (error.code === 'EADDRINUSE') {
+    console.log(`⚠️ Port ${port} is already in use. Trying alternative...`);
+  }
 });
 
 client.login(process.env.BOT_TOKEN);
