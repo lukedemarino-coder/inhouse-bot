@@ -3929,8 +3929,6 @@ process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully');
   client.destroy();
   process.exit(0);
-=======
->>>>>>> 8b442d3f85d89e1adb361ff7e490be4d776230aa
 });
 
 // ---------------- WEB SERVER FOR RENDER ----------------
