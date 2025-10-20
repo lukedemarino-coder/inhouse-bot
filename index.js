@@ -859,9 +859,10 @@ async function createDraftLolLobby() {
     // Use puppeteer (not puppeteer-core)
     const puppeteer = require('puppeteer');
   
-    // Configuration for server environment
+    // Configuration for Render environment
     const browserConfig = {
       headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -878,7 +879,7 @@ async function createDraftLolLobby() {
       timeout: 30000
     };
 
-    console.log('🔧 Launching browser...');
+    console.log('🔧 Launching browser with config:', browserConfig);
     browser = await puppeteer.launch(browserConfig);
     
     const page = await browser.newPage();
@@ -941,7 +942,6 @@ async function createDraftLolLobby() {
 
   } catch (error) {
     console.error('❌ Draft lobby creation failed:', error);
-    // Return fallback links that allow manual draft creation
     return getFallbackDraftLinks();
   } finally {
     if (browser) {
