@@ -3,8 +3,8 @@ require("dotenv").config();
 const fs = require("fs");
 const axios = require("axios");
 const cheerio = require("cheerio");
-const WebSocket = require('ws');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
+const chromium = require('@sparticuz/chromium');
 const {
   Client,
   GatewayIntentBits,
@@ -855,21 +855,13 @@ async function postRoleSelectionMessage(channel) {
 async function createDraftLolLobby() {
   let browser = null;
   try {
-    console.log('🔄 Launching Puppeteer browser for draftlol.dawe.gg...');
-    
-    // Puppeteer configuration for Render
+    // Launch the browser using the bundled Chromium
     browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-gpu'
-      ],
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(), // This is the key part
+      headless: chromium.headless,
+      ignoreHTTPSErrors: true,
     });
 
     console.log('✅ Browser launched, creating new page...');
@@ -964,13 +956,11 @@ async function createDraftLolLobby() {
     };
 
   } catch (error) {
-    console.error('❌ Puppeteer error creating draft lobby:', error);
+    console.error('❌ Puppeteer error:', error);
     throw new Error('Make draft links manually at https://draftlol.dawe.gg');
   } finally {
-    // Always close the browser
     if (browser) {
-      await browser.close().catch(console.error);
-      console.log('🔒 Browser closed');
+      await browser.close();
     }
   }
 }
