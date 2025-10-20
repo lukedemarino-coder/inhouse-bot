@@ -3525,49 +3525,60 @@ async function makeTeams(channel) {
 
   // --- Create Draft Lobby using draftlol.dawe.gg ---
   let blue = "", red = "", spectator = "", lobbyUrl = "";
+  let draftSuccess = false;
 
   try {
+    console.log("🔄 Starting draft lobby creation...");
     const links = await createDraftLolLobby();
     blue = links.blue;
     red = links.red;
     spectator = links.spectator;
     lobbyUrl = links.lobby;
-    
-    console.log(`✅ Generated draft links via Puppeteer`);
+    draftSuccess = true;
+    console.log(`✅ Draft links generated successfully`);
   } catch (err) {
-    console.error("Critical error creating draft lobby:", err);
+    console.error("❌ Critical error creating draft lobby:", err);
+    draftSuccess = false;
     
-    // Ultimate fallback
+    // Set fallback links but don't let this break the entire match
     blue = "https://draftlol.dawe.gg";
     red = "https://draftlol.dawe.gg"; 
     spectator = "https://draftlol.dawe.gg";
     lobbyUrl = "https://draftlol.dawe.gg";
-    
-    // Update the embed to show manual creation is needed
-    matchEmbed.setDescription(`**Manual Draft Setup Required**\n\nDue to technical issues, please visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create a draft lobby manually.\n\n1. Visit: https://draftlol.dawe.gg\n2. Click "Create Lobby"\n3. Share the generated links with your team`);
   }
 
-    const lobbyRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setLabel('🎮 CREATE LOBBY (Click This First!)')
-      .setStyle(ButtonStyle.Link)
-      .setURL(lobbyUrl)
+  // Only proceed with sending the match embed
+  console.log(`🔄 Proceeding to send match embed, draft success: ${draftSuccess}`);
+
+  const createSafeButton = (label, style, url, customId = null) => {
+    const button = new ButtonBuilder()
+      .setLabel(label)
+      .setStyle(style);
+    
+    if (url && url !== "https://draftlol.dawe.gg" && url.startsWith('http')) {
+      button.setURL(url);
+    } else {
+      button.setURL('https://draftlol.dawe.gg');
+      button.setStyle(ButtonStyle.Secondary); // Change style for fallback
+    }
+    
+    if (customId) {
+      button.setCustomId(customId);
+    }
+    
+    return button;
+  };
+
+  // Then use this safe function to create your buttons:
+  const lobbyRow = new ActionRowBuilder().addComponents(
+    createSafeButton('🎮 CREATE LOBBY (Click This First!)', ButtonStyle.Link, lobbyUrl)
   );
 
-  const teamRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setLabel('🟦 Blue Team Draft')
-      .setStyle(ButtonStyle.Link)
-      .setURL(blue),
-    new ButtonBuilder()
-      .setLabel('🔴 Red Team Draft')
-      .setStyle(ButtonStyle.Link)
-      .setURL(red),
-    new ButtonBuilder()
-      .setLabel('👁️ Spectator View')
-      .setStyle(ButtonStyle.Link)
-      .setURL(spectator)
-  );
+const teamRow = new ActionRowBuilder().addComponents(
+  createSafeButton('🟦 Blue Team Draft', ButtonStyle.Link, blue),
+  createSafeButton('🔴 Red Team Draft', ButtonStyle.Link, red), 
+  createSafeButton('👁️ Spectator View', ButtonStyle.Link, spectator)
+);
 
   const managementRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
