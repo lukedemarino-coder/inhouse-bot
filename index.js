@@ -966,26 +966,7 @@ async function createDraftLolLobby() {
 
   } catch (error) {
     console.error('❌ Puppeteer error creating draft lobby:', error);
-    
-    // Enhanced fallback with better error information
-    console.log('🔄 Falling back to manual link generation...');
-    
-    const roomId = generateRandomString(8);
-    const baseUrl = 'https://draftlol.dawe.gg';
-    
-    // In fallback mode, we can't get the actual codes, so we'll generate plausible ones
-    const blueCode = generateRandomString(8);
-    const redCode = generateRandomString(8);
-    
-    const links = {
-      lobby: `${baseUrl}/`,
-      blue: `${baseUrl}/${roomId}/${blueCode}`,
-      red: `${baseUrl}/${roomId}/${redCode}`,
-      spectator: `${baseUrl}/${roomId}`
-    };
-    
-    console.log('⚠️ Using fallback links - players will need to create lobby manually');
-    return links;
+    throw new Error('Make draft links manually at https://draftlol.dawe.gg');
   } finally {
     // Always close the browser
     if (browser) {
@@ -3524,61 +3505,48 @@ async function makeTeams(channel) {
   }
 
   // --- Create Draft Lobby using draftlol.dawe.gg ---
-  let blue = "", red = "", spectator = "", lobbyUrl = "";
   let draftSuccess = false;
+  let draftLinks = null;
 
   try {
     console.log("🔄 Starting draft lobby creation...");
-    const links = await createDraftLolLobby();
-    blue = links.blue;
-    red = links.red;
-    spectator = links.spectator;
-    lobbyUrl = links.lobby;
+    draftLinks = await createDraftLolLobby();
     draftSuccess = true;
     console.log(`✅ Draft links generated successfully`);
   } catch (err) {
     console.error("❌ Critical error creating draft lobby:", err);
     draftSuccess = false;
-    
-    // Set fallback links but don't let this break the entire match
-    blue = "https://draftlol.dawe.gg";
-    red = "https://draftlol.dawe.gg"; 
-    spectator = "https://draftlol.dawe.gg";
-    lobbyUrl = "https://draftlol.dawe.gg";
   }
 
-  // Only proceed with sending the match embed
-  console.log(`🔄 Proceeding to send match embed, draft success: ${draftSuccess}`);
+  // Build components based on draft success
+  const components = [];
+  
+  if (draftSuccess) {
+    // Create draft buttons with actual links
+    const lobbyRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('🎮 CREATE LOBBY (Click This First!)')
+        .setStyle(ButtonStyle.Link)
+        .setURL(draftLinks.lobby)
+    );
 
-  const createSafeButton = (label, style, url, customId = null) => {
-    const button = new ButtonBuilder()
-      .setLabel(label)
-      .setStyle(style);
-    
-    if (url && url !== "https://draftlol.dawe.gg" && url.startsWith('http')) {
-      button.setURL(url);
-    } else {
-      button.setURL('https://draftlol.dawe.gg');
-      button.setStyle(ButtonStyle.Secondary); // Change style for fallback
-    }
-    
-    if (customId) {
-      button.setCustomId(customId);
-    }
-    
-    return button;
-  };
+    const teamRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('🟦 Blue Team Draft')
+        .setStyle(ButtonStyle.Link)
+        .setURL(draftLinks.blue),
+      new ButtonBuilder()
+        .setLabel('🔴 Red Team Draft')
+        .setStyle(ButtonStyle.Link)
+        .setURL(draftLinks.red),
+      new ButtonBuilder()
+        .setLabel('👁️ Spectator View')
+        .setStyle(ButtonStyle.Link)
+        .setURL(draftLinks.spectator)
+    );
 
-  // Then use this safe function to create your buttons:
-  const lobbyRow = new ActionRowBuilder().addComponents(
-    createSafeButton('🎮 CREATE LOBBY (Click This First!)', ButtonStyle.Link, lobbyUrl)
-  );
-
-const teamRow = new ActionRowBuilder().addComponents(
-  createSafeButton('🟦 Blue Team Draft', ButtonStyle.Link, blue),
-  createSafeButton('🔴 Red Team Draft', ButtonStyle.Link, red), 
-  createSafeButton('👁️ Spectator View', ButtonStyle.Link, spectator)
-);
+    components.push(lobbyRow, teamRow);
+  }
 
   const managementRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -3591,46 +3559,56 @@ const teamRow = new ActionRowBuilder().addComponents(
       .setStyle(ButtonStyle.Success)
   );
 
-  // In the matchEmbed, add the lobby URL information:
+  components.push(managementRow);
+
+  // Create embed based on draft success
+  let embedDescription;
+  if (draftSuccess) {
+    embedDescription = `**Draft Lobby Successfully Created! 🎉**
+
+**Step 1: Share Links with Your Team**
+🔵 **Blue Team:** [Click to join Blue Draft](${draftLinks.blue})
+🔴 **Red Team:** [Click to join Red Draft](${draftLinks.red})  
+👁️ **Spectators:** [Spectator Link](${draftLinks.spectator})
+
+**Step 2: Join Your Respective Links**
+- Blue team players use the **Blue link**
+- Red team players use the **Red link** 
+- Coaches/casters use the **Spectator link**
+
+**Need Help?** Ask in this channel!`;
+  } else {
+    embedDescription = `**Manual Draft Setup Required**
+
+Due to technical issues, please visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create a draft lobby manually.
+
+1. Visit: https://draftlol.dawe.gg
+2. Click "Create Lobby"  
+3. Share the generated links with your team
+
+**Need Help?** Ask in this channel!`;
+  }
+
   const matchEmbed = new EmbedBuilder()
-  .setTitle("🎮 Match Lobby")
-  .setDescription(`**Draft Lobby Successfully Created! 🎉**
+    .setTitle("🎮 Match Lobby")
+    .setDescription(embedDescription)
+    .addFields(
+      {
+        name: `🔵 Team 1 (Avg Elo: ${Math.round(bestAvg1)})`,
+        value: formatTeamDisplay(bestTeam1, team1Roles),
+        inline: false,
+      },
+      {
+        name: `🔴 Team 2 (Avg Elo: ${Math.round(bestAvg2)})`,
+        value: formatTeamDisplay(bestTeam2, team2Roles),
+        inline: false,
+      }
+    )
+    .setColor(0x00ff00);
 
-  **Step 1: Share Links with Your Team**
-  🔵 **Blue Team:** [Click to join Blue Draft](${blue})
-  🔴 **Red Team:** [Click to join Red Draft](${red})  
-  👁️ **Spectators:** [Spectator Link](${spectator})
-
-  **Step 2: Join Your Respective Links**
-  - Blue team players use the **Blue link**
-  - Red team players use the **Red link** 
-  - Coaches/casters use the **Spectator link**
-
-  **Troubleshooting:**
-  - If you see a blank screen, wait 30 seconds and refresh
-  - Make sure you're using the correct link for your team
-  - If issues persist, visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create manually
-
-  **Need Help?** Ask in this channel!`)
-  .addFields(
-    {
-      name: `🔵 Team 1 (Avg Elo: ${Math.round(bestAvg1)})`,
-      value: formatTeamDisplay(bestTeam1, team1Roles),
-      inline: false,
-    },
-    {
-      name: `🔴 Team 2 (Avg Elo: ${Math.round(bestAvg2)})`,
-      value: formatTeamDisplay(bestTeam2, team2Roles),
-      inline: false,
-    }
-  )
-  .setColor(0x00ff00);
-
-
-  // Send with all rows
   const messageOptions = {
     embeds: [matchEmbed],
-    components: [lobbyRow, teamRow, managementRow]
+    components: components
   };
 
   // Only add content if draft links failed
