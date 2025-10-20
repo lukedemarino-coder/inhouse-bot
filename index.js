@@ -859,28 +859,57 @@ async function createDraftLolLobby() {
     // Use puppeteer (not puppeteer-core)
     const puppeteer = require('puppeteer');
   
+    // Try multiple browser paths
+    const browserPaths = [
+      '/usr/bin/google-chrome',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/chromium',
+      process.env.PUPPETEER_EXECUTABLE_PATH
+    ].filter(Boolean);
+
+    console.log('🔍 Checking for available browsers...');
+    
+    let executablePath = null;
+    const fs = require('fs');
+    
+    for (const path of browserPaths) {
+      if (fs.existsSync(path)) {
+        console.log(`✅ Found browser at: ${path}`);
+        executablePath = path;
+        break;
+      } else {
+        console.log(`❌ Browser not found at: ${path}`);
+      }
+    }
+
+    if (!executablePath) {
+      console.log('❌ No browser found, using fallback');
+      return getFallbackDraftLinks();
+    }
+
     // Configuration for Render environment
     const browserConfig = {
-      headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
+      headless: 'new', // Use new headless mode
+      executablePath: executablePath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--single-process',
-        '--no-zygote',
-        '--disable-web-security',
-        '--disable-features=site-per-process',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding'
+        '--no-zygote'
       ],
       timeout: 30000
     };
 
-    console.log('🔧 Launching browser with config:', browserConfig);
+    console.log('🔧 Launching browser with config:', {
+      executablePath: browserConfig.executablePath,
+      headless: browserConfig.headless,
+      argsCount: browserConfig.args.length
+    });
+
     browser = await puppeteer.launch(browserConfig);
+    console.log('✅ Browser launched successfully');
     
     const page = await browser.newPage();
     
@@ -942,6 +971,7 @@ async function createDraftLolLobby() {
 
   } catch (error) {
     console.error('❌ Draft lobby creation failed:', error);
+    // Return fallback links that allow manual draft creation
     return getFallbackDraftLinks();
   } finally {
     if (browser) {
@@ -3872,7 +3902,35 @@ async function endMatch(channel, winner, isVoided = false) {
 // ---------------- READY ----------------
 const MAIN_GUILD_ID = "1423242905602101310";
 
+// Add this function and call it in your ready event
+async function debugBrowserInstallation() {
+  const fs = require('fs');
+  console.log('🔍 Debugging browser installation...');
+  
+  const pathsToCheck = [
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium-browser', 
+    '/usr/bin/chromium',
+    '/opt/render/.cache/puppeteer'
+  ];
+  
+  for (const path of pathsToCheck) {
+    try {
+      const exists = fs.existsSync(path);
+      console.log(`📁 ${path}: ${exists ? '✅ EXISTS' : '❌ MISSING'}`);
+      
+      if (exists) {
+        const stats = fs.statSync(path);
+        console.log(`   📊 Size: ${stats.size} bytes, Is Directory: ${stats.isDirectory()}`);
+      }
+    } catch (error) {
+      console.log(`   💥 Error: ${error.message}`);
+    }
+  }
+}
+
 client.once("ready", async () => {
+  await debugBrowserInstallation();
   console.log(`✅ Logged in as ${client.user.tag}`);
   
   // Connect to MongoDB first
