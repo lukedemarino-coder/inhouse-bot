@@ -3605,7 +3605,7 @@ async function makeTeams(channel) {
 
   components.push(managementRow);
 
-  // Create embed with assigned drafters
+  // Create embed with assigned drafters and OP.GG links
   let embedDescription = "";
 
   if (draftSuccess) {
@@ -3623,10 +3623,13 @@ async function makeTeams(channel) {
       `${team2HighestPlayer.rank} ${team2HighestPlayer.division || ''} ${team2HighestPlayer.lp}LP` : 
       "Unknown";
 
-    embedDescription = `**Assigned Drafters(Highest Elo):**\n` +
-      `🔵 Blue Team: <@${team1HighestElo}> (${team1HighestDisplay})\n` +
-      `🔴 Red Team: <@${team2HighestElo}> (${team2HighestDisplay})\n\n` +
-      `**Once the match ends, use the Team Won buttons to score the game need 6/10 votes**`;
+    embedDescription = `**Assigned Drafters:**\n` +
+      `🔵 Blue Team: <@${team1HighestElo}> (Highest Elo)\n` +
+      `🔴 Red Team: <@${team2HighestElo}> (Highest Elo)\n\n` +
+      `**Team OP.GG Links:**\n` +
+      `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
+      `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
+      `**After match, vote with Team Won buttons - 6/10 votes needed**`;
   } else {
     embedDescription = `**Manual Draft Setup Required**\n\nPlease visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create a draft lobby manually.`;
   }
