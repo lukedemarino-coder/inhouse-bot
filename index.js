@@ -851,66 +851,48 @@ async function postRoleSelectionMessage(channel) {
   }
 }
 
+function generateRandomDraftLinks() {
+  function generateRandomString(length = 8) {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let result = '';
+    for (let i = 0; i < length; i++) {
+      result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+  }
+
+  const spectatorCode = generateRandomString(8);
+  const blueCode = generateRandomString(8);
+  const redCode = generateRandomString(8);
+  
+  // According to your description, the format is:
+  // draftlol.dawe.gg/spectator/blue/red
+  const baseUrl = 'https://draftlol.dawe.gg';
+  
+  return {
+    spectator: `${baseUrl}/${spectatorCode}`,
+    blue: `${baseUrl}/${spectatorCode}/${blueCode}`,
+    red: `${baseUrl}/${spectatorCode}/${redCode}`
+  };
+}
+
+// Replace the createDraftLolLobby function with this simple version
 async function createDraftLolLobby() {
-  // For Render environment, use these specific launch options
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-      '--disable-gpu'
-    ],
-    executablePath: process.env.CHROME_PATH || '/usr/bin/chromium-browser' // Common path on many systems
-  });
-  
-  const page = await browser.newPage();
-  
   try {
-    await page.goto("https://draftlol.dawe.gg/", { waitUntil: 'networkidle2', timeout: 30000 });
-    
-    // Wait for and click "Create Lobby"
-    await page.waitForSelector("div.sendButton", { timeout: 10000 });
-    await page.click("div.sendButton");
-    
-    // Wait for inputs to appear
-    await page.waitForSelector(".createContainer input.inputBlue", { timeout: 10000 });
-    await page.waitForSelector(".createContainer input.inputRed", { timeout: 10000 });
-    
-    // Wait for spectator input
-    await page.waitForFunction(() => {
-      const container = document.querySelector(".createContainer");
-      if (!container) return false;
-      const inputs = Array.from(container.querySelectorAll("input[type=text]"));
-      return inputs.some((input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed"));
-    }, { timeout: 10000 });
-
-    // Grab all three links
-    const links = await page.evaluate(() => {
-      const container = document.querySelector(".createContainer");
-      if (!container) return { blue: "", red: "", spectator: "" };
-      const blue = container.querySelector(".inputBlue")?.value || "";
-      const red = container.querySelector(".inputRed")?.value || "";
-      const inputs = Array.from(container.querySelectorAll("input[type=text]"));
-      const spectatorInput = inputs.find(
-        (input) => !input.classList.contains("inputBlue") && !input.classList.contains("inputRed")
-      );
-      const spectator = spectatorInput?.value || "";
-      return { blue, red, spectator };
-    });
-
-    return links;
+    console.log('🔄 Generating draft links with random URLs');
+    return generateRandomDraftLinks();
   } catch (error) {
-    console.error("Error creating draft lobby:", error);
+    console.error("Error generating draft links:", error);
     return getFallbackDraftLinks();
-  } finally {
-    await browser.close().catch(console.error);
   }
 }
+
+// Keep the fallback function but simplify it
+function getFallbackDraftLinks() {
+  console.log('🔄 Using fallback draft links');
+  return generateRandomDraftLinks();
+}
+
 
 // Enhanced fallback function
 function getFallbackDraftLinks() {
@@ -3505,9 +3487,10 @@ async function makeTeams(channel) {
     blue = links.blue;
     red = links.red;
     spectator = links.spectator;
+    console.log(`✅ Generated draft links: Spectator: ${spectator}, Blue: ${blue}, Red: ${red}`);
   } catch (err) {
-    console.error("Failed to create draft lobby:", err);
-    // Continue without draft links - we'll handle this in the message content
+    console.error("Failed to generate draft links:", err);
+    // Continue with empty links - we'll handle this in the message content
   }
 
   // Create multiple action rows for better organization
