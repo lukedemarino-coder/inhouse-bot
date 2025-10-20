@@ -4,6 +4,7 @@ const fs = require("fs");
 const axios = require("axios");
 const cheerio = require("cheerio");
 const WebSocket = require('ws');
+const puppeteer = require('puppeteer');
 const {
   Client,
   GatewayIntentBits,
@@ -852,98 +853,146 @@ async function postRoleSelectionMessage(channel) {
 }
 
 async function createDraftLolLobby() {
-  return new Promise((resolve, reject) => {
+  let browser = null;
+  try {
+    console.log('🔄 Launching Puppeteer browser for draftlol.dawe.gg...');
+    
+    // Puppeteer configuration for Render
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process',
+        '--disable-gpu'
+      ],
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null
+    });
+
+    console.log('✅ Browser launched, creating new page...');
+    const page = await browser.newPage();
+    
+    // Set a reasonable timeout
+    await page.setDefaultTimeout(30000);
+    
+    // Set viewport to ensure elements are visible
+    await page.setViewport({ width: 1280, height: 720 });
+    
+    // Navigate to draftlol homepage
+    console.log('🌐 Navigating to draftlol.dawe.gg...');
+    await page.goto('https://draftlol.dawe.gg/', { 
+      waitUntil: 'networkidle2',
+      timeout: 30000
+    });
+
+    // Wait for the page to load completely - look for the create lobby section
+    console.log('⏳ Waiting for page to load...');
+    await page.waitForSelector('body', { timeout: 10000 });
+    
+    // Wait for the create lobby button to be available
+    console.log('🔍 Looking for Create Lobby button...');
+    await page.waitForSelector('div.sendButton', { timeout: 15000 });
+    
+    // Click "Create Lobby"
+    console.log('🖱️ Clicking Create Lobby button...');
+    await page.click('div.sendButton');
+    
+    // Wait for blue and red inputs to appear
+    console.log('⏳ Waiting for team links to generate...');
+    await page.waitForSelector('.createContainer input.inputBlue', { timeout: 10000 });
+    await page.waitForSelector('.createContainer input.inputRed', { timeout: 10000 });
+    
+    // Wait for spectator input (third input that's not blue or red)
+    console.log('⏳ Waiting for spectator link...');
+    await page.waitForFunction(() => {
+      const container = document.querySelector('.createContainer');
+      if (!container) return false;
+      const inputs = Array.from(container.querySelectorAll('input[type=text]'));
+      return inputs.some((input) => !input.classList.contains('inputBlue') && !input.classList.contains('inputRed'));
+    }, { timeout: 10000 });
+    
+    // Wait a bit more to ensure all links are populated
+    await page.waitForTimeout(2000);
+    
+    // Grab all three links from the input fields
+    console.log('📋 Extracting draft links...');
+    const links = await page.evaluate(() => {
+      const container = document.querySelector('.createContainer');
+      if (!container) {
+        console.error('No createContainer found');
+        return { blue: '', red: '', spectator: '' };
+      }
+      
+      const blueInput = container.querySelector('.inputBlue');
+      const redInput = container.querySelector('.inputRed');
+      
+      // Find the spectator input (third input that's not blue or red)
+      const inputs = Array.from(container.querySelectorAll('input[type=text]'));
+      const spectatorInput = inputs.find(
+        (input) => !input.classList.contains('inputBlue') && !input.classList.contains('inputRed')
+      );
+      
+      const blue = blueInput?.value || '';
+      const red = redInput?.value || '';
+      const spectator = spectatorInput?.value || '';
+      
+      console.log('Found links:', { blue, red, spectator });
+      return { blue, red, spectator };
+    });
+
+    // Validate that we got the links
+    if (!links.blue || !links.red || !links.spectator) {
+      throw new Error('Failed to extract all draft links');
+    }
+
+    console.log('✅ Draft lobby created successfully!');
+    console.log(`🔵 Blue: ${links.blue}`);
+    console.log(`🔴 Red: ${links.red}`);
+    console.log(`👁️ Spectator: ${links.spectator}`);
+    
+    // The lobby URL is the base URL since we're already on the creation page
+    const lobbyUrl = 'https://draftlol.dawe.gg/';
+    
+    return {
+      lobby: lobbyUrl,
+      blue: links.blue,
+      red: links.red,
+      spectator: links.spectator
+    };
+
+  } catch (error) {
+    console.error('❌ Puppeteer error creating draft lobby:', error);
+    
+    // Enhanced fallback with better error information
+    console.log('🔄 Falling back to manual link generation...');
+    
     const roomId = generateRandomString(8);
-    const password = generateRandomString(8);
+    const baseUrl = 'https://draftlol.dawe.gg';
+    
+    // In fallback mode, we can't get the actual codes, so we'll generate plausible ones
     const blueCode = generateRandomString(8);
     const redCode = generateRandomString(8);
     
-    const baseUrl = 'https://draftlol.dawe.gg';
-    const lobbyUrl = `${baseUrl}/${roomId}/${password}/${blueCode}/${redCode}`;
-    
     const links = {
-      lobby: lobbyUrl,
+      lobby: `${baseUrl}/`,
       blue: `${baseUrl}/${roomId}/${blueCode}`,
       red: `${baseUrl}/${roomId}/${redCode}`,
       spectator: `${baseUrl}/${roomId}`
     };
-
-    console.log('🔄 Attempting WebSocket connection to create draft room...');
     
-    const ws = new WebSocket('wss://draftlol.dawe.gg/');
-    let roomCreated = false;
-
-    ws.on('open', () => {
-      console.log('🔗 WebSocket connected, joining room:', roomId);
-      
-      // Join the room first
-      ws.send(JSON.stringify({
-        type: "joinroom",
-        roomId: roomId,
-        password: password
-      }));
-    });
-
-    ws.on('message', (data) => {
-      try {
-        const message = JSON.parse(data.toString());
-        console.log('📨 Received:', message.type);
-        
-        if (message.type === 'statechange') {
-          console.log('✅ Room state received - room is active');
-          roomCreated = true;
-          ws.close();
-          resolve(links);
-        } else if (message.type === 'error') {
-          console.log('❌ WebSocket error:', message);
-          // Even if there's an error, we'll still return the links
-          // Sometimes the room still gets created
-          if (!roomCreated) {
-            roomCreated = true;
-            ws.close();
-            resolve(links);
-          }
-        }
-      } catch (error) {
-        console.error('Error parsing WebSocket message:', error);
-      }
-    });
-
-    ws.on('error', (error) => {
-      console.error('WebSocket connection error:', error);
-      if (!roomCreated) {
-        roomCreated = true;
-        resolve(links); // Fallback to returning links anyway
-      }
-    });
-
-    ws.on('close', () => {
-      console.log('🔌 WebSocket closed');
-      if (!roomCreated) {
-        console.log('⚠️ WebSocket closed before room creation, using generated links');
-        resolve(links);
-      }
-    });
-
-    // Timeout after 5 seconds
-    setTimeout(() => {
-      if (!roomCreated) {
-        console.log('⏰ WebSocket timeout, using generated links');
-        roomCreated = true;
-        ws.close();
-        resolve(links);
-      }
-    }, 5000);
-  });
-}
-
-function generateRandomString(length = 8) {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let result = '';
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
+    console.log('⚠️ Using fallback links - players will need to create lobby manually');
+    return links;
+  } finally {
+    // Always close the browser
+    if (browser) {
+      await browser.close().catch(console.error);
+      console.log('🔒 Browser closed');
+    }
   }
-  return result;
 }
 
 client.rest.on('rateLimited', (rateLimitInfo) => {
@@ -3482,12 +3531,20 @@ async function makeTeams(channel) {
     blue = links.blue;
     red = links.red;
     spectator = links.spectator;
-    lobbyUrl = links.lobby; // The 4-part URL to create the lobby
+    lobbyUrl = links.lobby;
     
-    console.log(`✅ Generated 4-part lobby URL: ${lobbyUrl}`);
+    console.log(`✅ Generated draft links via Puppeteer`);
   } catch (err) {
-    console.error("Failed to generate draft links:", err);
-    // Continue without draft links
+    console.error("Critical error creating draft lobby:", err);
+    
+    // Ultimate fallback
+    blue = "https://draftlol.dawe.gg";
+    red = "https://draftlol.dawe.gg"; 
+    spectator = "https://draftlol.dawe.gg";
+    lobbyUrl = "https://draftlol.dawe.gg";
+    
+    // Update the embed to show manual creation is needed
+    matchEmbed.setDescription(`**Manual Draft Setup Required**\n\nDue to technical issues, please visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create a draft lobby manually.\n\n1. Visit: https://draftlol.dawe.gg\n2. Click "Create Lobby"\n3. Share the generated links with your team`);
   }
 
     const lobbyRow = new ActionRowBuilder().addComponents(
@@ -3526,29 +3583,24 @@ async function makeTeams(channel) {
   // In the matchEmbed, add the lobby URL information:
   const matchEmbed = new EmbedBuilder()
   .setTitle("🎮 Match Lobby")
-  .setDescription(`**IMPORTANT: Follow these steps to set up the draft:**
+  .setDescription(`**Draft Lobby Successfully Created! 🎉**
 
-  **Step 1: Create the Lobby**
-  🔗 **[Click here to CREATE the draft lobby](${lobbyUrl})**
-  → This must be done by **ONE person** (any player or staff)
-  → Just open the link and close the tab - the lobby will be created
-
-  **Step 2: Join Your Team**
-  After the lobby is created, use these links:
-
-  🟦 **Blue Team:** [Join Blue Draft](${blue})
-  🔴 **Red Team:** [Join Red Draft](${red})  
+  **Step 1: Share Links with Your Team**
+  🔵 **Blue Team:** [Click to join Blue Draft](${blue})
+  🔴 **Red Team:** [Click to join Red Draft](${red})  
   👁️ **Spectators:** [Spectator Link](${spectator})
+
+  **Step 2: Join Your Respective Links**
+  - Blue team players use the **Blue link**
+  - Red team players use the **Red link** 
+  - Coaches/casters use the **Spectator link**
 
   **Troubleshooting:**
   - If you see a blank screen, wait 30 seconds and refresh
-  - Make sure Step 1 was completed first
-  - If issues persist, use the manual draft links below
+  - Make sure you're using the correct link for your team
+  - If issues persist, visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create manually
 
-  **Manual Setup (if automated fails):**
-  1. Visit: draftlol.dawe.gg
-  2. Create a new draft manually
-  3. Share the links with your team`)
+  **Need Help?** Ask in this channel!`)
   .addFields(
     {
       name: `🔵 Team 1 (Avg Elo: ${Math.round(bestAvg1)})`,

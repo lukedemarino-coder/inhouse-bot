@@ -5,7 +5,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "install-deps": "npm install"
+    "install-deps": "npm install && npm install puppeteer"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +20,7 @@
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "mongodb": "^6.20.0",
+    "puppeteer": "^24.25.0",
     "ws": "^8.18.3"
   }
 }
