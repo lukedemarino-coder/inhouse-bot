@@ -851,127 +851,99 @@ async function postRoleSelectionMessage(channel) {
   }
 }
 
-class DraftLolGenerator {
-  constructor() {
-    this.roomId = this.generateId();
-    this.password = this.generateId();
-  }
-  
-  generateId() {
-    return Math.random().toString(36).substring(2, 10);
-  }
-  
-  async createDraftLobby(blueTeamName = "Blue", redTeamName = "Red") {
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket('wss://draftlol.dawe.gg/');
-      let isResolved = false;
+async function createDraftLolLobby() {
+  return new Promise((resolve, reject) => {
+    const roomId = generateRandomString(8);
+    const password = generateRandomString(8);
+    const blueCode = generateRandomString(8);
+    const redCode = generateRandomString(8);
+    
+    const baseUrl = 'https://draftlol.dawe.gg';
+    const lobbyUrl = `${baseUrl}/${roomId}/${password}/${blueCode}/${redCode}`;
+    
+    const links = {
+      lobby: lobbyUrl,
+      blue: `${baseUrl}/${roomId}/${blueCode}`,
+      red: `${baseUrl}/${roomId}/${redCode}`,
+      spectator: `${baseUrl}/${roomId}`
+    };
+
+    console.log('🔄 Attempting WebSocket connection to create draft room...');
+    
+    const ws = new WebSocket('wss://draftlol.dawe.gg/');
+    let roomCreated = false;
+
+    ws.on('open', () => {
+      console.log('🔗 WebSocket connected, joining room:', roomId);
       
-      ws.on('open', () => {
-        console.log(`🔗 WebSocket connected, creating room: ${this.roomId}`);
+      // Join the room first
+      ws.send(JSON.stringify({
+        type: "joinroom",
+        roomId: roomId,
+        password: password
+      }));
+    });
+
+    ws.on('message', (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        console.log('📨 Received:', message.type);
         
-        // Join/create room
-        ws.send(JSON.stringify({
-          type: "joinroom",
-          roomId: this.roomId,
-          password: this.password
-        }));
-        
-        // Optional: Customize settings after a short delay
-        setTimeout(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({
-              type: "statechange",
-              newState: {
-                blueName: blueTeamName,
-                redName: redTeamName,
-                timePerPick: 30,
-                timePerBan: 30
-              }
-            }));
-          }
-        }, 500);
-      });
-      
-      ws.on('message', (data) => {
-        try {
-          const msg = JSON.parse(data);
-          console.log('📨 WebSocket message:', msg.type);
-          
-          if (msg.type === 'statechange') {
-            if (!isResolved) {
-              isResolved = true;
-              const links = this.getDraftLinks();
-              console.log(`✅ Draft room created: ${links.spectator}`);
-              ws.close();
-              resolve(links);
-            }
-          }
-        } catch (error) {
-          console.error('Error parsing WebSocket message:', error);
-        }
-      });
-      
-      ws.on('error', (error) => {
-        console.error('WebSocket error:', error);
-        if (!isResolved) {
-          isResolved = true;
-          reject(error);
-        }
-      });
-      
-      ws.on('close', () => {
-        console.log('🔌 WebSocket connection closed');
-      });
-      
-      // Timeout after 10 seconds
-      setTimeout(() => {
-        if (!isResolved) {
-          isResolved = true;
-          console.log('⏰ WebSocket timeout, generating fallback links');
-          const links = this.getDraftLinks();
+        if (message.type === 'statechange') {
+          console.log('✅ Room state received - room is active');
+          roomCreated = true;
           ws.close();
           resolve(links);
+        } else if (message.type === 'error') {
+          console.log('❌ WebSocket error:', message);
+          // Even if there's an error, we'll still return the links
+          // Sometimes the room still gets created
+          if (!roomCreated) {
+            roomCreated = true;
+            ws.close();
+            resolve(links);
+          }
         }
-      }, 10000);
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error);
+      }
     });
-  }
-  
-  getDraftLinks() {
-    const baseUrl = 'https://draftlol.dawe.gg';
-    return {
-      lobby: `${baseUrl}/draft/${this.roomId}`, // Main lobby URL
-      blue: `${baseUrl}/draft/${this.roomId}`,   // Same URL for all, team selection happens in UI
-      red: `${baseUrl}/draft/${this.roomId}`,    // Same URL for all, team selection happens in UI
-      spectator: `${baseUrl}/draft/${this.roomId}` // Same URL for spectators
-    };
-  }
+
+    ws.on('error', (error) => {
+      console.error('WebSocket connection error:', error);
+      if (!roomCreated) {
+        roomCreated = true;
+        resolve(links); // Fallback to returning links anyway
+      }
+    });
+
+    ws.on('close', () => {
+      console.log('🔌 WebSocket closed');
+      if (!roomCreated) {
+        console.log('⚠️ WebSocket closed before room creation, using generated links');
+        resolve(links);
+      }
+    });
+
+    // Timeout after 5 seconds
+    setTimeout(() => {
+      if (!roomCreated) {
+        console.log('⏰ WebSocket timeout, using generated links');
+        roomCreated = true;
+        ws.close();
+        resolve(links);
+      }
+    }, 5000);
+  });
 }
 
-// Update the createDraftLolLobby function to use the new class
-async function createDraftLolLobby(blueTeamName = "Blue", redTeamName = "Red") {
-  try {
-    console.log('🔄 Creating draftlol.dawe.gg lobby via WebSocket...');
-    const draftGenerator = new DraftLolGenerator();
-    const links = await draftGenerator.createDraftLobby(blueTeamName, redTeamName);
-    
-    console.log('📋 Generated draft links:');
-    console.log(`   Lobby: ${links.lobby}`);
-    console.log(`   Spectator: ${links.spectator}`);
-    
-    return links;
-  } catch (error) {
-    console.error("Error creating draft lobby:", error);
-    
-    // Fallback: generate simple links
-    const roomId = Math.random().toString(36).substring(2, 10);
-    const baseUrl = 'https://draftlol.dawe.gg';
-    return {
-      lobby: `${baseUrl}/draft/${roomId}`,
-      blue: `${baseUrl}/draft/${roomId}`,
-      red: `${baseUrl}/draft/${roomId}`,
-      spectator: `${baseUrl}/draft/${roomId}`
-    };
+function generateRandomString(length = 8) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
+  return result;
 }
 
 client.rest.on('rateLimited', (rateLimitInfo) => {
@@ -1393,51 +1365,6 @@ client.on("interactionCreate", async (interaction) => {
         // Also update the match message to show current votes
         await updateMatchVoteDisplay(interaction.channel, match);
       }
-    }
-
-    // --- Draft Links ---
-    else if (type === "draft") {
-      // Find which match this button belongs to
-      let targetMatch = null;
-      
-      // Look through all active matches to find one that has this channel
-      for (const [channelId, match] of matches) {
-        if (match.matchChannel?.id === interaction.channelId) {
-          targetMatch = match;
-          break;
-        }
-      }
-      
-      if (!targetMatch) {
-        return interaction.reply({ 
-          content: "❌ No active match found in this channel.", 
-          ephemeral: true 
-        });
-      }
-
-      const memberId = interaction.user.id;
-
-      const link = targetMatch.lobby; // Use the same lobby URL for everyone
-
-      if (team === "spectator") {
-        return interaction.reply({ content: `🌐 Draft Lobby: <${link}>`, ephemeral: true });
-      }
-
-      // For blue/red teams, still check permissions but send same link
-      const isStaff = interaction.member.permissions.has("ManageGuild");
-      const isTopElo = memberId === topPlayerId;
-
-      if (!isStaff && !isTopElo) {
-        return interaction.reply({ 
-          content: "❌ Only staff or the top Elo player of this team can click this link.", 
-          ephemeral: true 
-        });
-      }
-
-      return interaction.reply({ 
-        content: `🌐 ${team} draft link: <${link}>\n\n**Note:** All players use the same link. Select your team in the draft interface.`, 
-        ephemeral: true 
-      });
     }
 
     // --- Leave Queue ---
@@ -2570,7 +2497,6 @@ client.on("messageCreate", async (message) => {
     return message.channel.send(`🚫 Removed <@${userId}> from the queue.`);
   }
 
-  // Update the !cancelmatch command similarly:
   if (cmd === "!cancelmatch") {
     if (!message.member.permissions.has("ManageGuild")) {
       return message.reply("❌ Only staff members can use this command.");
@@ -2582,7 +2508,7 @@ client.on("messageCreate", async (message) => {
       return message.reply("❌ There is no active match in this channel to cancel.");
     }
 
-    const { matchChannel, team1VC, team2VC } = match;
+    const { matchChannel, team1VC, team2VC, matchCategory } = match;
     const guild = message.guild;
 
     try {
@@ -2590,6 +2516,7 @@ client.on("messageCreate", async (message) => {
       if (matchChannel) await matchChannel.delete().catch(() => {});
       if (team1VC) await team1VC.delete().catch(() => {});
       if (team2VC) await team2VC.delete().catch(() => {});
+      if (matchCategory) await matchCategory.delete().catch(() => {});
 
       // Remove this match from active matches
       matches.delete(message.channel.id);
@@ -3563,57 +3490,65 @@ async function makeTeams(channel) {
     // Continue without draft links
   }
 
-  // Create multiple action rows for better organization
-  const draftRow = new ActionRowBuilder().addComponents(
+    const lobbyRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`draft_blue_${team1TopElo}`)
-      .setLabel("🟦 Blue Draft Link")
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId(`draft_red_${team2TopElo}`)
-      .setLabel("🟥 Red Draft Link")
-      .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId(`draft_spectator`)
-      .setLabel("👁️ Spectator Link")
-      .setStyle(ButtonStyle.Secondary)
+      .setLabel('🎮 CREATE LOBBY (Click This First!)')
+      .setStyle(ButtonStyle.Link)
+      .setURL(lobbyUrl)
   );
 
-  // Match management row
+  const teamRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel('🟦 Blue Team Draft')
+      .setStyle(ButtonStyle.Link)
+      .setURL(blue),
+    new ButtonBuilder()
+      .setLabel('🔴 Red Team Draft')
+      .setStyle(ButtonStyle.Link)
+      .setURL(red),
+    new ButtonBuilder()
+      .setLabel('👁️ Spectator View')
+      .setStyle(ButtonStyle.Link)
+      .setURL(spectator)
+  );
+
   const managementRow = new ActionRowBuilder().addComponents(
-  new ButtonBuilder()
-    .setCustomId(`report_win_1`)
-    .setLabel("🏆 Team 1 Won")
-    .setStyle(ButtonStyle.Success),
-  new ButtonBuilder()
-    .setCustomId(`report_win_2`)
-    .setLabel("🏆 Team 2 Won")
-    .setStyle(ButtonStyle.Success)
+    new ButtonBuilder()
+      .setCustomId(`report_win_1`)
+      .setLabel('🏆 Team 1 Won')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`report_win_2`)
+      .setLabel('🏆 Team 2 Won')
+      .setStyle(ButtonStyle.Success)
   );
 
   // In the matchEmbed, add the lobby URL information:
   const matchEmbed = new EmbedBuilder()
   .setTitle("🎮 Match Lobby")
-  .setDescription(`Welcome to your match! Use the single draft link below for all participants.
+  .setDescription(`**IMPORTANT: Follow these steps to set up the draft:**
 
-  **Draft Lobby (All Players Use This):**
-  🔗 [Join Draft Lobby](${lobbyUrl})
+  **Step 1: Create the Lobby**
+  🔗 **[Click here to CREATE the draft lobby](${lobbyUrl})**
+  → This must be done by **ONE person** (any player or staff)
+  → Just open the link and close the tab - the lobby will be created
 
-  **How to Join:**
-  1. **All players** click the same link above
-  2. Select your team (Blue/Red) in the draft interface
-  3. Spectators can use the same link
+  **Step 2: Join Your Team**
+  After the lobby is created, use these links:
 
-  **Team Assignments:**
-  🔵 Blue Team: ${bestTeam1.map(id => `<@${id}>`).join(', ')}
-  🔴 Red Team: ${bestTeam2.map(id => `<@${id}>`).join(', ')}
+  🟦 **Blue Team:** [Join Blue Draft](${blue})
+  🔴 **Red Team:** [Join Red Draft](${red})  
+  👁️ **Spectators:** [Spectator Link](${spectator})
 
-  **Team OP.GG Links:**
-  🟦 [Blue Team Multi OP.GG](${team1Link})
-  🟥 [Red Team Multi OP.GG](${team2Link})
+  **Troubleshooting:**
+  - If you see a blank screen, wait 30 seconds and refresh
+  - Make sure Step 1 was completed first
+  - If issues persist, use the manual draft links below
 
-  **Match Voting:**
-  Players can vote for the winning team. 6 votes for one team will automatically end the match.`)
+  **Manual Setup (if automated fails):**
+  1. Visit: draftlol.dawe.gg
+  2. Create a new draft manually
+  3. Share the links with your team`)
   .addFields(
     {
       name: `🔵 Team 1 (Avg Elo: ${Math.round(bestAvg1)})`,
@@ -3629,10 +3564,10 @@ async function makeTeams(channel) {
   .setColor(0x00ff00);
 
 
-  // Prepare the message options
+  // Send with all rows
   const messageOptions = {
     embeds: [matchEmbed],
-    components: [draftRow, managementRow]
+    components: [lobbyRow, teamRow, managementRow]
   };
 
   // Only add content if draft links failed
