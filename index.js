@@ -870,7 +870,6 @@ async function createDraftLolLobby() {
         '--single-process',
         '--disable-gpu'
       ],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null
     });
 
     console.log('✅ Browser launched, creating new page...');
