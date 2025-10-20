@@ -856,31 +856,25 @@ async function createDraftLolLobby() {
   try {
     console.log('🚀 Starting draft lobby creation...');
     
-    const puppeteer = require('puppeteer');
+    // Use puppeteer-core with chrome-aws-lambda
+    const puppeteer = require('puppeteer-core');
+    const chromium = require('chrome-aws-lambda');
+
+    console.log('🔧 Getting Chromium executable path...');
+    const executablePath = await chromium.executablePath;
+    console.log('✅ Chromium path:', executablePath);
 
     // Configuration that works on Render
     const browserConfig = {
-      headless: 'new', // Use new headless mode
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--single-process',
-        '--no-zygote',
-        '--disable-web-security',
-        '--disable-features=site-per-process',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-        '--remote-debugging-port=0', // Use random port
-        '--window-size=1920,1080'
-      ],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH, // Let Puppeteer handle this
+      executablePath: executablePath,
+      headless: chromium.headless,
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      ignoreHTTPSErrors: true,
       timeout: 30000
     };
 
-    console.log('🔧 Launching browser with Puppeteer built-in Chromium...');
+    console.log('🔧 Launching browser with chrome-aws-lambda...');
     browser = await puppeteer.launch(browserConfig);
     console.log('✅ Browser launched successfully');
     
@@ -3875,35 +3869,27 @@ async function endMatch(channel, winner, isVoided = false) {
 // ---------------- READY ----------------
 const MAIN_GUILD_ID = "1423242905602101310";
 
-// Add this function and call it in your ready event
-async function debugBrowserInstallation() {
+async function debugPuppeteer() {
   const fs = require('fs');
-  console.log('🔍 Debugging browser installation...');
+  const { execSync } = require('child_process');
   
-  const pathsToCheck = [
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium-browser', 
-    '/usr/bin/chromium',
-    '/opt/render/.cache/puppeteer'
-  ];
+  console.log('🔍 Debugging Puppeteer environment...');
   
-  for (const path of pathsToCheck) {
-    try {
-      const exists = fs.existsSync(path);
-      console.log(`📁 ${path}: ${exists ? '✅ EXISTS' : '❌ MISSING'}`);
-      
-      if (exists) {
-        const stats = fs.statSync(path);
-        console.log(`   📊 Size: ${stats.size} bytes, Is Directory: ${stats.isDirectory()}`);
-      }
-    } catch (error) {
-      console.log(`   💥 Error: ${error.message}`);
-    }
+  // Check node_modules
+  console.log('📁 Checking puppeteer-core:', fs.existsSync('./node_modules/puppeteer-core'));
+  console.log('📁 Checking chrome-aws-lambda:', fs.existsSync('./node_modules/chrome-aws-lambda'));
+  
+  // Try to find Chrome
+  try {
+    const result = execSync('find . -name "*chrome*" -type f 2>/dev/null | head -10', { encoding: 'utf8' });
+    console.log('🔍 Found Chrome files:', result.split('\n').filter(Boolean));
+  } catch (e) {
+    console.log('❌ No Chrome files found');
   }
 }
 
 client.once("ready", async () => {
-  await debugBrowserInstallation();
+  await debugPuppeteer();
   console.log(`✅ Logged in as ${client.user.tag}`);
   
   // Connect to MongoDB first
