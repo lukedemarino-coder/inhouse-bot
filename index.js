@@ -3,6 +3,7 @@ require("dotenv").config();
 const fs = require("fs");
 const axios = require("axios");
 const cheerio = require("cheerio");
+const puppeteer = require('puppeteer');
 const {
   Client,
   GatewayIntentBits,
@@ -853,9 +854,6 @@ async function postRoleSelectionMessage(channel) {
 async function createDraftLolLobby() {  
   let browser;
   try {
-    // Use puppeteer-core with system Chrome
-    const puppeteer = require('puppeteer-core');
-  
     // Configuration for Render environment
     const browserConfig = {
       headless: true,
