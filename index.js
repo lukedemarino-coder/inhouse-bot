@@ -1162,7 +1162,7 @@ client.on("interactionCreate", async (interaction) => {
         ephemeral: true
       });
     }
-    
+
     // --- Report Win Buttons ---
     if (interaction.customId === 'open_role_selection') {
         try {
@@ -3598,12 +3598,6 @@ async function makeTeams(channel) {
     );
 
     components.push(lobbyRow, teamRow);
-    
-    // Store which players should have access to draft links
-    matchData.drafters = {
-      blue: team1HighestElo,
-      red: team2HighestElo
-    };
   }
 
   const managementRow = new ActionRowBuilder().addComponents(
@@ -3690,6 +3684,7 @@ async function makeTeams(channel) {
       team1: new Set(),
       team2: new Set()
     },
+    // ✅ Add drafters info here instead
     drafters: draftSuccess ? {
       blue: team1Sorted[0], // Highest Elo blue player
       red: team2Sorted[0]   // Highest Elo red player
