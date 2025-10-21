@@ -1761,44 +1761,50 @@ client.on("messageCreate", async (message) => {
       }
     }
 
-    if (cmd === "!forcesave") {
+    if (cmd === "!reloaddata") {
       if (!message.member.permissions.has("ManageGuild")) {
         return message.reply("❌ Only staff members can use this command.");
       }
 
-      // Clear any pending debounce
-      if (saveDataTimeout) {
-        clearTimeout(saveDataTimeout);
-        saveDataTimeout = null;
-      }
-
-      // Force immediate save
-      const dataToSave = { 
-        ...playerData, 
-        _bannedUsers: Array.from(bannedUsers),
-        _timeoutTracking: playerData._timeoutTracking,
-        _userBlocks: Object.fromEntries(Array.from(userBlocks.entries()).map(([k, v]) => [k, Array.from(v)])),
-        _smurfRefunds: {
-          processedMatches: Array.from(playerData._smurfRefunds?.processedMatches || new Set()),
-          processedSmurfs: Array.from(playerData._smurfRefunds?.processedSmurfs || new Set()),
-          refundHistory: playerData._smurfRefunds?.refundHistory || {}
+      try {
+        console.log('🔄 Manually reloading data from MongoDB...');
+        
+        // If MongoDB is connected, use it
+        if (playerDataCollection) {
+          const data = await playerDataCollection.findOne({ _id: 'main' });
+          if (data) {
+            console.log('📥 Reloaded data from MongoDB');
+            
+            // Convert arrays back to Sets
+            if (data._bannedUsers) bannedUsers = new Set(data._bannedUsers);
+            if (data._userBlocks) {
+              userBlocks = new Map(Object.entries(data._userBlocks).map(([k, v]) => [k, new Set(v)]));
+            }
+            
+            // Convert smurf refund Sets
+            if (data._smurfRefunds) {
+              if (data._smurfRefunds.processedMatches) {
+                data._smurfRefunds.processedMatches = new Set(data._smurfRefunds.processedMatches);
+              }
+              if (data._smurfRefunds.processedSmurfs) {
+                data._smurfRefunds.processedSmurfs = new Set(data._smurfRefunds.processedSmurfs);
+              }
+            }
+            
+            // Replace the in-memory data
+            Object.keys(playerData).forEach(key => delete playerData[key]);
+            Object.assign(playerData, data);
+            
+            await updateLeaderboardChannel(message.guild);
+            return message.reply("✅ Data reloaded from MongoDB!");
+          }
         }
-      };
-
-      // Try MongoDB first
-      if (playerDataCollection) {
-        try {
-          await playerDataCollection.updateOne(
-            { _id: 'main' },
-            { $set: dataToSave },
-            { upsert: true }
-          );
-          console.log('💾 FORCE SAVED to MongoDB');
-          return message.reply("✅ Data force-saved to MongoDB!");
-        } catch (error) {
-          console.error('Error force saving to MongoDB:', error);
-          return message.reply("❌ Failed to force save to MongoDB.");
-        }
+        
+        return message.reply("❌ No data found in MongoDB or MongoDB not connected.");
+        
+      } catch (error) {
+        console.error('Error reloading from MongoDB:', error);
+        return message.reply("❌ Failed to reload data from MongoDB.");
       }
     }
     
