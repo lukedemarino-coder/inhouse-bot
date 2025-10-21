@@ -1761,53 +1761,166 @@ client.on("messageCreate", async (message) => {
       }
     }
 
-    if (cmd === "!reloaddata") {
+    // ---------------- !adjustlp (STAFF ONLY) ----------------
+    if (cmd === "!adjustlp") {
       if (!message.member.permissions.has("ManageGuild")) {
         return message.reply("❌ Only staff members can use this command.");
       }
 
-      try {
-        console.log('🔄 Manually reloading data from MongoDB...');
-        
-        // If MongoDB is connected, use it
-        if (playerDataCollection) {
-          const data = await playerDataCollection.findOne({ _id: 'main' });
-          if (data) {
-            console.log('📥 Reloaded data from MongoDB');
-            
-            // Convert arrays back to Sets
-            if (data._bannedUsers) bannedUsers = new Set(data._bannedUsers);
-            if (data._userBlocks) {
-              userBlocks = new Map(Object.entries(data._userBlocks).map(([k, v]) => [k, new Set(v)]));
-            }
-            
-            // Convert smurf refund Sets
-            if (data._smurfRefunds) {
-              if (data._smurfRefunds.processedMatches) {
-                data._smurfRefunds.processedMatches = new Set(data._smurfRefunds.processedMatches);
-              }
-              if (data._smurfRefunds.processedSmurfs) {
-                data._smurfRefunds.processedSmurfs = new Set(data._smurfRefunds.processedSmurfs);
-              }
-            }
-            
-            // Replace the in-memory data
-            Object.keys(playerData).forEach(key => delete playerData[key]);
-            Object.assign(playerData, data);
-            
-            await updateLeaderboardChannel(message.guild);
-            return message.reply("✅ Data reloaded from MongoDB!");
-          }
-        }
-        
-        return message.reply("❌ No data found in MongoDB or MongoDB not connected.");
-        
-      } catch (error) {
-        console.error('Error reloading from MongoDB:', error);
-        return message.reply("❌ Failed to reload data from MongoDB.");
+      if (args.length < 2) {
+        return message.reply("Usage: !adjustlp <@user> <amount>\nUse positive number to add LP, negative to subtract LP\nExample: `!adjustlp @user 25` or `!adjustlp @user -15`");
       }
+
+      const userMention = args[0];
+      const lpAmount = parseInt(args[1]);
+      
+      if (isNaN(lpAmount)) {
+        return message.reply("❌ Please provide a valid number for LP amount.");
+      }
+
+      const userId = userMention.replace(/[<@!>]/g, "");
+      const player = ensurePlayer(userId);
+      
+      if (!player.summonerName) {
+        return message.reply("❌ That user is not registered. They need to use `!register` first.");
+      }
+
+      // Store old stats for display
+      const oldRank = player.rank;
+      const oldDivision = player.division;
+      const oldLP = player.lp;
+      const oldIHP = getIHP(player);
+
+      // Adjust LP
+      player.lp += lpAmount;
+
+      // Ensure LP doesn't go negative
+      if (player.lp < 0) {
+        player.lp = 0;
+      }
+
+      // Update rank based on new IHP
+      const newIHP = getIHP(player);
+      const newStats = IHPToRank(newIHP);
+      
+      player.rank = newStats.rank;
+      player.division = newStats.division;
+      player.lp = newStats.lp;
+
+      saveData();
+      await updateLeaderboardChannel(message.guild);
+
+      const action = lpAmount >= 0 ? "added" : "subtracted";
+      const lpDisplay = Math.abs(lpAmount);
+      
+      const embed = new EmbedBuilder()
+        .setTitle("📊 LP Adjustment")
+        .setDescription(`LP ${action} for <@${userId}>`)
+        .addFields(
+          { name: "LP Change", value: `${lpAmount >= 0 ? '+' : ''}${lpAmount} LP`, inline: true },
+          { name: "Old Rank", value: formatRankDisplay(oldRank, oldDivision, oldLP), inline: true },
+          { name: "New Rank", value: formatRankDisplay(player.rank, player.division, player.lp), inline: true },
+          { name: "Old IHP", value: oldIHP.toString(), inline: true },
+          { name: "New IHP", value: newIHP.toString(), inline: true }
+        )
+        .setColor(lpAmount >= 0 ? 0x00ff00 : 0xff0000)
+        .setTimestamp()
+        .setFooter({ text: `Adjusted by ${message.author.username}` });
+
+      await message.channel.send({ embeds: [embed] });
     }
-    
+
+    // ---------------- !adjustrecord (STAFF ONLY) ----------------
+    if (cmd === "!adjustrecord") {
+      if (!message.member.permissions.has("ManageGuild")) {
+        return message.reply("❌ Only staff members can use this command.");
+      }
+
+      if (args.length < 3) {
+        return message.reply("Usage: !adjustrecord <@user> <wins> <losses>\nExample: `!adjustrecord @user 5 3` to set wins=5, losses=3");
+      }
+
+      const userMention = args[0];
+      const newWins = parseInt(args[1]);
+      const newLosses = parseInt(args[2]);
+      
+      if (isNaN(newWins) || isNaN(newLosses) || newWins < 0 || newLosses < 0) {
+        return message.reply("❌ Please provide valid positive numbers for wins and losses.");
+      }
+
+      const userId = userMention.replace(/[<@!>]/g, "");
+      const player = ensurePlayer(userId);
+      
+      if (!player.summonerName) {
+        return message.reply("❌ That user is not registered. They need to use `!register` first.");
+      }
+
+      // Store old stats for display
+      const oldWins = player.wins || 0;
+      const oldLosses = player.losses || 0;
+      const oldRank = player.rank;
+      const oldDivision = player.division;
+      const oldLP = player.lp;
+
+      // Update wins and losses
+      player.wins = newWins;
+      player.losses = newLosses;
+
+      // Update streak logic based on new record
+      const totalGames = newWins + newLosses;
+      if (totalGames === 0) {
+        player.currentStreak = 0;
+        player.streakType = "none";
+      } else {
+        // Simple streak logic: if last change was positive, assume win streak
+        if (newWins > oldWins) {
+          player.currentStreak = Math.max(1, player.currentStreak >= 0 ? player.currentStreak + 1 : 1);
+          player.streakType = "win";
+        } else if (newLosses > oldLosses) {
+          player.currentStreak = Math.min(-1, player.currentStreak <= 0 ? player.currentStreak - 1 : -1);
+          player.streakType = "loss";
+        }
+        // If wins/losses were set manually without clear "last game", reset to no streak
+        else {
+          player.currentStreak = 0;
+          player.streakType = "none";
+        }
+      }
+
+      saveData();
+      await updateLeaderboardChannel(message.guild);
+
+      const totalGamesNew = newWins + newLosses;
+      const winRateNew = totalGamesNew > 0 ? ((newWins / totalGamesNew) * 100).toFixed(1) : "0.0";
+      const winRateOld = (oldWins + oldLosses) > 0 ? ((oldWins / (oldWins + oldLosses)) * 100).toFixed(1) : "0.0";
+
+      const embed = new EmbedBuilder()
+        .setTitle("📊 Record Adjustment")
+        .setDescription(`Win/Loss record updated for <@${userId}>`)
+        .addFields(
+          { 
+            name: "Old Record", 
+            value: `${oldWins}W ${oldLosses}L (${winRateOld}% WR)`, 
+            inline: true 
+          },
+          { 
+            name: "New Record", 
+            value: `${newWins}W ${newLosses}L (${winRateNew}% WR)`, 
+            inline: true 
+          },
+          { 
+            name: "Net Change", 
+            value: `${newWins - oldWins >= 0 ? '+' : ''}${newWins - oldWins}W / ${newLosses - oldLosses >= 0 ? '+' : ''}${newLosses - oldLosses}L`, 
+            inline: true 
+          }
+        )
+        .setColor(0x0099FF)
+        .setTimestamp()
+        .setFooter({ text: `Adjusted by ${message.author.username}` });
+
+      await message.channel.send({ embeds: [embed] });
+    }
+
     // ---------------- !mystreak ----------------
     if (cmd === "!mystreak") {
       const userMention = args[0] || message.author.id;
