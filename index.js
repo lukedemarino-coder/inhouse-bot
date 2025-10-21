@@ -1760,6 +1760,47 @@ client.on("messageCreate", async (message) => {
         return message.reply("❌ Failed to fetch OP.GG page. Make sure the link is correct.");
       }
     }
+
+    if (cmd === "!forcesave") {
+      if (!message.member.permissions.has("ManageGuild")) {
+        return message.reply("❌ Only staff members can use this command.");
+      }
+
+      // Clear any pending debounce
+      if (saveDataTimeout) {
+        clearTimeout(saveDataTimeout);
+        saveDataTimeout = null;
+      }
+
+      // Force immediate save
+      const dataToSave = { 
+        ...playerData, 
+        _bannedUsers: Array.from(bannedUsers),
+        _timeoutTracking: playerData._timeoutTracking,
+        _userBlocks: Object.fromEntries(Array.from(userBlocks.entries()).map(([k, v]) => [k, Array.from(v)])),
+        _smurfRefunds: {
+          processedMatches: Array.from(playerData._smurfRefunds?.processedMatches || new Set()),
+          processedSmurfs: Array.from(playerData._smurfRefunds?.processedSmurfs || new Set()),
+          refundHistory: playerData._smurfRefunds?.refundHistory || {}
+        }
+      };
+
+      // Try MongoDB first
+      if (playerDataCollection) {
+        try {
+          await playerDataCollection.updateOne(
+            { _id: 'main' },
+            { $set: dataToSave },
+            { upsert: true }
+          );
+          console.log('💾 FORCE SAVED to MongoDB');
+          return message.reply("✅ Data force-saved to MongoDB!");
+        } catch (error) {
+          console.error('Error force saving to MongoDB:', error);
+          return message.reply("❌ Failed to force save to MongoDB.");
+        }
+      }
+    }
     
     // ---------------- !mystreak ----------------
     if (cmd === "!mystreak") {
