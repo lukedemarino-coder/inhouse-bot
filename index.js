@@ -145,7 +145,9 @@ function ensurePlayer(id) {
       lp: 0, 
       wins: 0, 
       losses: 0,
-      roles: [] // Make sure roles array is initialized
+      roles: [], // Make sure roles array is initialized
+      currentStreak: 0, // 0 = no streak, positive = win streak, negative = loss streak
+      streakType: "none" // "win", "loss", or "none"
     };
   }
   
@@ -157,43 +159,65 @@ function ensurePlayer(id) {
   if (player.wins === undefined) player.wins = 0;
   if (player.losses === undefined) player.losses = 0;
   if (player.roles === undefined) player.roles = [];
+  if (player.currentStreak === undefined) player.currentStreak = 0;
+  if (player.streakType === undefined) player.streakType = "none";
   
   return playerData[id];
 }
 
-function getNextMatchId() {
-  const matchHistory = loadMatchHistory();
-  
-  // If no matches exist, start from 1
-  if (matchHistory.length === 0) {
-    return "1";
+// ---------------- MATCH ID GENERATION ----------------
+let matchIdCounter = 0;
+let matchIdInitialized = false;
+
+async function getNextMatchId() {
+  // Wait for lock if another match is being created
+  while (matchIdLock) {
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
   
-  // Extract all numeric IDs and find the maximum
-  const numericIds = matchHistory
-    .map(match => {
-      // Convert string IDs to numbers, ignore non-numeric
-      const id = match.id;
-      if (typeof id === 'number') return id;
-      if (typeof id === 'string') {
-        const num = parseInt(id);
-        return isNaN(num) ? 0 : num;
+  try {
+    matchIdLock = true;
+    
+    // If we haven't initialized the counter yet, load from match history
+    if (!matchIdInitialized) {
+      const matchHistory = await loadMatchHistory();
+      
+      // If no matches exist, start from 1
+      if (matchHistory.length === 0) {
+        matchIdCounter = 1;
+      } else {
+        // Find the highest existing match ID
+        const maxId = Math.max(...matchHistory.map(match => {
+          // Handle both string and number IDs
+          const id = match.id;
+          if (typeof id === 'string') {
+            const num = parseInt(id);
+            return isNaN(num) ? 0 : num;
+          } else if (typeof id === 'number') {
+            return id;
+          }
+          return 0;
+        }).filter(id => !isNaN(id) && id > 0));
+        
+        matchIdCounter = maxId + 1;
       }
-      return 0;
-    })
-    .filter(id => id > 0); // Only positive numbers
-  
-  // If we found valid numeric IDs, use the max + 1
-  if (numericIds.length > 0) {
-    const maxId = Math.max(...numericIds);
-    return (maxId + 1).toString();
+      matchIdInitialized = true;
+      console.log(`🔢 Match ID counter initialized: ${matchIdCounter}`);
+    } else {
+      // Just increment the counter
+      matchIdCounter++;
+    }
+    
+    console.log(`🎯 Generated new match ID: ${matchIdCounter}`);
+    return matchIdCounter.toString();
+    
+  } finally {
+    // Always release the lock
+    matchIdLock = false;
   }
-  
-  // Fallback: start from current count + 1
-  return (matchHistory.length + 1).toString();
 }
 
-// Add this function to load/save match history
+// load/save match history
 async function loadMatchHistory() {
     if (matchHistoryCollection) {
         try {
@@ -207,8 +231,17 @@ async function loadMatchHistory() {
     
     // Fallback to file
     if (fs.existsSync(MATCH_HISTORY_FILE)) {
-        return JSON.parse(fs.readFileSync(MATCH_HISTORY_FILE));
+        try {
+            const data = fs.readFileSync(MATCH_HISTORY_FILE, 'utf8');
+            const history = JSON.parse(data);
+            console.log(`📥 Loaded ${history.length} matches from local file`);
+            return history;
+        } catch (error) {
+            console.error('Error loading match history from file:', error);
+            return [];
+        }
     }
+    console.log('📥 No existing match history found');
     return [];
 }
 
@@ -229,6 +262,31 @@ async function saveMatchHistory(history) {
     
     // Fallback to file
     fs.writeFileSync(MATCH_HISTORY_FILE, JSON.stringify(history, null, 2));
+}
+
+// reset match ID counter on bot restart
+async function initializeMatchIdCounter() {
+  const matchHistory = await loadMatchHistory();
+  
+  if (matchHistory.length === 0) {
+    matchIdCounter = 1;
+  } else {
+    // Find the highest existing match ID
+    const maxId = Math.max(...matchHistory.map(match => {
+      const id = match.id;
+      if (typeof id === 'string') {
+        const num = parseInt(id);
+        return isNaN(num) ? 0 : num;
+      } else if (typeof id === 'number') {
+        return id;
+      }
+      return 0;
+    }).filter(id => !isNaN(id) && id > 0));
+    
+    matchIdCounter = maxId + 1;
+  }
+  matchIdInitialized = true;
+  console.log(`🔢 Match ID counter initialized: ${matchIdCounter}`);
 }
 
 // ---------------- RANK SYSTEM ----------------
@@ -1646,12 +1704,41 @@ client.on("messageCreate", async (message) => {
       }
     }
     
+    // ---------------- !mystreak ----------------
+    if (cmd === "!mystreak") {
+      const userMention = args[0] || message.author.id;
+      const userId = userMention.replace(/[<@!>]/g, "") || message.author.id;
+      
+      const player = ensurePlayer(userId);
+      
+      let streakMessage = "";
+      if (player.streakType === "win") {
+        streakMessage = `🔥 You are on a **${player.currentStreak} game win streak**!\n`;;
+      } else if (player.streakType === "loss") {
+        streakMessage = `😔 You are on a **${Math.abs(player.currentStreak)} game loss streak**.\n`;
+      } else {
+        streakMessage = "📊 You have no active win or loss streak.\n";
+      }
+      
+      const embed = new EmbedBuilder()
+        .setTitle("📊 Your Current Streak")
+        .setDescription(streakMessage)
+        .addFields(
+          { name: "Wins", value: `${player.wins}`, inline: true },
+          { name: "Losses", value: `${player.losses}`, inline: true },
+          { name: "Win Rate", value: player.wins + player.losses > 0 ? `${((player.wins / (player.wins + player.losses)) * 100).toFixed(1)}%` : "0%", inline: true }
+        )
+        .setColor(player.streakType === "win" ? 0x00ff00 : player.streakType === "loss" ? 0xff0000 : 0x888888)
+        .setTimestamp();
+      
+      await message.channel.send({ embeds: [embed] });
+    }
+
     // ---------------- !smurfing (STAFF ONLY) ----------------
     if (cmd === "!smurfing") {
       if (!message.member.permissions.has("ManageGuild")) {
         return message.reply("❌ Only staff members can use this command.");
       }
-
       if (args.length < 3) {
         return message.reply("Usage: !smurfing @user <registered_rank> <main_rank>");
       }
@@ -3700,7 +3787,6 @@ async function makeTeams(channel) {
   updateQueueMessage();
 }
 
-
 // ---------------- END MATCH ----------------
 async function endMatch(channel, winner, isVoided = false) {
   // Get the match for this specific channel
@@ -3726,6 +3812,42 @@ async function endMatch(channel, winner, isVoided = false) {
   const eloChanges = [];
   const rankChanges = [];
 
+  // Function to calculate streak bonus/penalty (INFINITE - NO CAP)
+  function calculateStreakAdjustment(player, isWinner) {
+    const baseLP = 20;
+    let streakAdjustment = 0;
+    
+    if (isWinner) {
+      // Win streak logic - INFINITE
+      if (player.streakType === "win") {
+        streakAdjustment = player.currentStreak; // +1 for 2nd win, +2 for 3rd win, +3 for 4th win, etc.
+      } else if (player.streakType === "loss") {
+        // Breaking a loss streak - no adjustment
+        streakAdjustment = 0;
+      } else {
+        // First win - no adjustment
+        streakAdjustment = 0;
+      }
+    } else {
+      // Loss streak logic - INFINITE  
+      if (player.streakType === "loss") {
+        streakAdjustment = -Math.abs(player.currentStreak); // -1 for 2nd loss, -2 for 3rd loss, -3 for 4th loss, etc.
+      } else if (player.streakType === "win") {
+        // Breaking a win streak - no adjustment
+        streakAdjustment = 0;
+      } else {
+        // First loss - no adjustment
+        streakAdjustment = 0;
+      }
+    }
+    
+    return {
+      baseLP: baseLP,
+      streakAdjustment: streakAdjustment,
+      totalLP: baseLP + streakAdjustment
+    };
+  }
+
   // Update winners and track changes
   winners.forEach((id) => {
     const p = ensurePlayer(id);
@@ -3734,8 +3856,19 @@ async function endMatch(channel, winner, isVoided = false) {
     const oldDivision = p.division;
     const oldLP = p.lp;
 
+    // Calculate streak adjustment
+    const lpCalculation = calculateStreakAdjustment(p, true);
+    
+    // Update streak
+    if (p.streakType === "win") {
+      p.currentStreak += 1;
+    } else {
+      p.currentStreak = 1;
+      p.streakType = "win";
+    }
+
     p.wins++;
-    p.lp += 20;
+    p.lp += lpCalculation.totalLP;
 
     const newIHP = getIHP(p);
     const newStats = IHPToRank(newIHP);
@@ -3753,7 +3886,10 @@ async function endMatch(channel, winner, isVoided = false) {
       oldLP,
       newRank: p.rank,
       newDivision: p.division,
-      newLP: p.lp
+      newLP: p.lp,
+      streakBonus: lpCalculation.streakAdjustment,
+      baseLP: lpCalculation.baseLP,
+      totalLP: lpCalculation.totalLP
     });
 
     // Check for rank changes
@@ -3777,8 +3913,19 @@ async function endMatch(channel, winner, isVoided = false) {
     const oldDivision = p.division;
     const oldLP = p.lp;
 
+    // Calculate streak adjustment
+    const lpCalculation = calculateStreakAdjustment(p, false);
+    
+    // Update streak
+    if (p.streakType === "loss") {
+      p.currentStreak -= 1; // Goes more negative
+    } else {
+      p.currentStreak = -1;
+      p.streakType = "loss";
+    }
+
     p.losses++;
-    p.lp -= 20;
+    p.lp += lpCalculation.totalLP; // This will be negative due to streakAdjustment
 
     const newIHP = getIHP(p);
     const newStats = IHPToRank(newIHP);
@@ -3796,7 +3943,67 @@ async function endMatch(channel, winner, isVoided = false) {
       oldLP,
       newRank: p.rank,
       newDivision: p.division,
-      newLP: p.lp
+      newLP: p.lp,
+      streakPenalty: lpCalculation.streakAdjustment,
+      baseLP: lpCalculation.baseLP,
+      totalLP: lpCalculation.totalLP
+    });
+
+    // Check for rank changes
+    if (p.rank !== oldRank || p.division !== oldDivision) {
+      rankChanges.push({
+        id,
+        oldRank,
+        oldDivision,
+        newRank: p.rank,
+        newDivision: p.division,
+        isPromotion: newIHP > oldIHP
+      });
+    }
+  });
+
+  // Update losers and track changes
+  losers.forEach((id) => {
+    const p = ensurePlayer(id);
+    const oldIHP = getIHP(p);
+    const oldRank = p.rank;
+    const oldDivision = p.division;
+    const oldLP = p.lp;
+
+    // Calculate streak adjustment
+    const lpCalculation = calculateStreakAdjustment(p, false);
+    
+    // Update streak
+    if (p.streakType === "loss") {
+      p.currentStreak -= 1; // Goes more negative
+    } else {
+      p.currentStreak = -1;
+      p.streakType = "loss";
+    }
+
+    p.losses++;
+    p.lp += lpCalculation.totalLP; // This will be negative due to streakAdjustment
+
+    const newIHP = getIHP(p);
+    const newStats = IHPToRank(newIHP);
+    Object.assign(p, newStats);
+
+    // Track ELO change
+    eloChanges.push({
+      id,
+      oldIHP,
+      newIHP,
+      change: newIHP - oldIHP,
+      isWinner: false,
+      oldRank,
+      oldDivision,
+      oldLP,
+      newRank: p.rank,
+      newDivision: p.division,
+      newLP: p.lp,
+      streakPenalty: lpCalculation.streakAdjustment,
+      baseLP: lpCalculation.baseLP,
+      totalLP: lpCalculation.totalLP
     });
 
     // Check for rank changes
@@ -3824,7 +4031,11 @@ async function endMatch(channel, winner, isVoided = false) {
       oldIHP: change.oldIHP,
       newIHP: change.newIHP,
       change: change.change,
-      isWinner: change.isWinner
+      isWinner: change.isWinner,
+      streakBonus: change.streakBonus,
+      streakPenalty: change.streakPenalty,
+      baseLP: change.baseLP,
+      totalLP: change.totalLP
     })),
     voided: isVoided
   };
@@ -3834,11 +4045,11 @@ async function endMatch(channel, winner, isVoided = false) {
 
   saveData();
 
-  // Create enhanced history embed with ELO changes - NOW INCLUDES MATCH ID
+  // Create enhanced history embed with ELO changes and streak info
   const team1Players = team1.map(id => `<@${id}>`).join(", ") || "—";
   const team2Players = team2.map(id => `<@${id}>`).join(", ") || "—";
 
-  // Build ELO changes display
+  // Build ELO changes display with streak information
   const eloChangesText = eloChanges.map(change => {
     const changeSymbol = change.change >= 0 ? "🟢" : "🔴";
     const changeText = change.change >= 0 ? `+${change.change}` : `${change.change}`;
@@ -3847,13 +4058,20 @@ async function endMatch(channel, winner, isVoided = false) {
     const oldRankDisplay = change.oldDivision ? `${change.oldRank} ${change.oldDivision}` : change.oldRank;
     const newRankDisplay = change.newDivision ? `${change.newRank} ${change.newDivision}` : change.newRank;
     
-    return `${winLoss} <@${change.id}>: ${oldRankDisplay} ${change.oldLP}LP → ${newRankDisplay} ${change.newLP}LP (${changeSymbol} ${changeText} ELO)`;
+    let streakInfo = "";
+    if (change.streakBonus > 0) {
+      streakInfo = ` (+${change.streakBonus} streak bonus)`;
+    } else if (change.streakPenalty < 0) {
+      streakInfo = ` (${change.streakPenalty} streak penalty)`;
+    }
+    
+    return `${winLoss} <@${change.id}>: ${oldRankDisplay} ${change.oldLP}LP → ${newRankDisplay} ${change.newLP}LP (${changeSymbol} ${changeText} ELO${streakInfo})`;
   }).join('\n');
 
   // ADD MATCH ID TO THE EMBED TITLE AND DESCRIPTION
   const embed = new EmbedBuilder()
-    .setTitle(`📜 Match History - ID: ${matchId}`) // ADD MATCH ID TO TITLE
-    .setDescription(`**Match ID:** ${matchId}\n**Winner:** ${winner === "1" ? "🟦 Team 1 (Blue)" : "🟥 Team 2 (Red)"}`) // ADD MATCH ID TO DESCRIPTION
+    .setTitle(`📜 Match History - ID: ${matchId}`)
+    .setDescription(`**Match ID:** ${matchId}\n**Winner:** ${winner === "1" ? "🟦 Team 1 (Blue)" : "🟥 Team 2 (Red)"}`)
     .addFields(
       { name: "🟦 Team 1 (Blue)", value: team1Players, inline: false },
       { name: "🟥 Team 2 (Red)", value: team2Players, inline: false },
@@ -3861,10 +4079,37 @@ async function endMatch(channel, winner, isVoided = false) {
     )
     .setColor(winner === "1" ? 0x3498db : 0xe74c3c)
     .setTimestamp()
-    .setFooter({ text: `Match ID: ${matchId} | Use !changewinner or !voidmatch with this ID` }); // ADD MATCH ID TO FOOTER
+    .setFooter({ text: `Match ID: ${matchId} | Use !changewinner or !voidmatch with this ID` });
 
   // Send main history embed
   await historyChannel.send({ embeds: [embed] });
+
+  // Send streak notifications
+  const streakNotifications = [];
+  
+  winners.forEach(id => {
+    const player = ensurePlayer(id);
+    if (player.currentStreak >= 2) {
+      streakNotifications.push(`🔥 <@${id}> is on a ${player.currentStreak} game win streak!`);
+    }
+  });
+  
+  losers.forEach(id => {
+    const player = ensurePlayer(id);
+    if (player.currentStreak <= -2) {
+      streakNotifications.push(`😔 <@${id}> is on a ${Math.abs(player.currentStreak)} game loss streak.`);
+    }
+  });
+  
+  if (streakNotifications.length > 0) {
+    const streakEmbed = new EmbedBuilder()
+      .setTitle("📊 Streak Updates")
+      .setDescription(streakNotifications.join('\n'))
+      .setColor(0xffa500)
+      .setTimestamp();
+    
+    await historyChannel.send({ embeds: [streakEmbed] });
+  }
 
   // Send rank promotions/demotions to both #history AND #general if any occurred
   if (rankChanges.length > 0) {
@@ -3886,11 +4131,6 @@ async function endMatch(channel, winner, isVoided = false) {
 
     // Send to history channel
     await historyChannel.send({ embeds: [rankChangeEmbed] });
-  }
-
-  // Fun shoutout if Romeo wins
-  if (winners.includes("272603932268822529") && generalChannel) {
-    await generalChannel.send("Wow Romeo actually won? That guy is ass");
   }
 
   // ✅ Send confirmation message BEFORE deleting channels - NOW INCLUDES MATCH ID
@@ -3930,6 +4170,9 @@ client.once("ready", async () => {
   
   // Load data from MongoDB/file
   playerData = await loadData();
+
+  // Initialize match ID counter
+  await initializeMatchIdCounter();
   
   const guild = client.guilds.cache.get(MAIN_GUILD_ID);
   if (!guild) {
