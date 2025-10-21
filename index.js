@@ -349,6 +349,16 @@ async function loadData() {
                     userBlocks = new Map(Object.entries(data._userBlocks).map(([k, v]) => [k, new Set(v)]));
                 }
                 
+                // ✅ ADD THIS: Convert smurf refund Sets
+                if (data._smurfRefunds) {
+                    if (data._smurfRefunds.processedMatches) {
+                        data._smurfRefunds.processedMatches = new Set(data._smurfRefunds.processedMatches);
+                    }
+                    if (data._smurfRefunds.processedSmurfs) {
+                        data._smurfRefunds.processedSmurfs = new Set(data._smurfRefunds.processedSmurfs);
+                    }
+                }
+                
                 return data;
             }
         } catch (error) {
@@ -361,6 +371,17 @@ async function loadData() {
         console.log('📥 Loaded data from local file');
         const data = JSON.parse(fs.readFileSync(DATA_FILE));
         bannedUsers = new Set(data._bannedUsers || []);
+        
+        // ✅ ADD THIS: Convert smurf refund Sets for file loading too
+        if (data._smurfRefunds) {
+            if (data._smurfRefunds.processedMatches) {
+                data._smurfRefunds.processedMatches = new Set(data._smurfRefunds.processedMatches);
+            }
+            if (data._smurfRefunds.processedSmurfs) {
+                data._smurfRefunds.processedSmurfs = new Set(data._smurfRefunds.processedSmurfs);
+            }
+        }
+        
         return data;
     }
     
@@ -437,7 +458,25 @@ const ROLES = [
   { label: "Support", value: "Support" }
 ];
 
-
+// ---------------- HELPER FUNCTIONS ----------------
+// Add this helper function to clear a user from all matches
+function clearUserFromAllMatches(userId) {
+  let cleared = false;
+  
+  for (const [channelId, match] of matches.entries()) {
+    const wasInTeam1 = match.team1.includes(userId);
+    const wasInTeam2 = match.team2.includes(userId);
+    
+    if (wasInTeam1 || wasInTeam2) {
+      match.team1 = match.team1.filter(id => id !== userId);
+      match.team2 = match.team2.filter(id => id !== userId);
+      cleared = true;
+      console.log(`🔄 Cleared user ${userId} from match in channel ${channelId}`);
+    }
+  }
+  
+  return cleared;
+}
 
 // ---------------- BLOCK SYSTEM ----------------
 function getUserBlocks(userId) {
@@ -574,8 +613,18 @@ async function updateLeaderboardChannel(guild) {
     }
   }
 
-  // Build leaderboard sorted by Elo/IHP
+  // Build leaderboard sorted by Elo/IHP - FILTER OUT SYSTEM KEYS AND PLAYERS WITH NO GAMES
   const players = Object.keys(playerData)
+    .filter(id => {
+      // Exclude system keys that start with underscore
+      if (id.startsWith('_')) return false;
+      
+      // Ensure it's a valid player object with required properties
+      const p = playerData[id];
+      const hasPlayedGames = (p.wins + p.losses) > 0;
+      
+      return p && typeof p === 'object' && p.rank !== undefined && hasPlayedGames;
+    })
     .map(id => {
       const p = playerData[id];
       const gp = p.wins + p.losses;
@@ -597,24 +646,34 @@ async function updateLeaderboardChannel(guild) {
   // Split into chunks of 25
   const chunkSize = 25;
   const embeds = [];
-  for (let i = 0; i < players.length; i += chunkSize) {
-    const chunk = players.slice(i, i + chunkSize);
-    const description = chunk
-      .map((p, idx) => {
-        const rankDiv = p.division ? `${p.rank} ${p.division}` : p.rank;
-        const lpLabel = "LP";
-        const line1 = `#${i + idx + 1} • ${rankDiv} ${p.lp} LP`;
-        const line2 = `<@${p.id}> | Elo: ${p.elo} | W: ${p.wins} | L: ${p.losses} | WR: ${p.wr}% | GP: ${p.gp}`;
-        return `${line1}\n${line2}`;
-      })
-      .join("\n\n");
-
+  
+  // If no players, show empty leaderboard
+  if (players.length === 0) {
     const embed = new EmbedBuilder()
-      .setTitle(i === 0 ? "🏆 Leaderboard" : `Leaderboard (cont.)`)
-      .setDescription(description)
+      .setTitle("🏆 Leaderboard")
+      .setDescription("No players have completed any games yet. Play your first match to appear on the leaderboard!")
       .setColor(0xffd700)
       .setTimestamp();
     embeds.push(embed);
+  } else {
+    for (let i = 0; i < players.length; i += chunkSize) {
+      const chunk = players.slice(i, i + chunkSize);
+      const description = chunk
+        .map((p, idx) => {
+          const rankDiv = p.division ? `${p.rank} ${p.division}` : p.rank;
+          const line1 = `#${i + idx + 1} • ${rankDiv} ${p.lp} LP`;
+          const line2 = `<@${p.id}> | Elo: ${p.elo} | W: ${p.wins} | L: ${p.losses} | WR: ${p.wr}% | GP: ${p.gp}`;
+          return `${line1}\n${line2}`;
+        })
+        .join("\n\n");
+
+      const embed = new EmbedBuilder()
+        .setTitle(i === 0 ? "🏆 Leaderboard" : `Leaderboard (cont.)`)
+        .setDescription(description)
+        .setColor(0xffd700)
+        .setTimestamp();
+      embeds.push(embed);
+    }
   }
 
   // EDIT existing messages if they exist
@@ -1635,15 +1694,13 @@ client.on("messageCreate", async (message) => {
   // ---------------- AUTO-DELETE QUEUE CHANNEL MESSAGES ----------------
   // Delete ANY message in queue channel after 60 seconds, except the main queue embed
   if (message.channel.name === 'queue') {
-    // ONLY skip deletion for the main queue message (the one with buttons)
-    if (message.id === queueMessage?.id) {
-      return; // Don't delete the main queue embed
-    }
-    
     // Don't delete bot messages that are part of ready checks or other important bot messages
     if (message.embeds.length > 0) {
       const embed = message.embeds[0];
-      if (embed.title && (embed.title.includes("Ready Check"))) {
+      if (embed.title && (
+        embed.title.includes("Ready Check") || 
+        embed.title.includes("Current Queue") 
+      )) {
         return; // Skip deletion for important bot embeds
       }
     }
@@ -1739,6 +1796,25 @@ client.on("messageCreate", async (message) => {
       if (!message.member.permissions.has("ManageGuild")) {
         return message.reply("❌ Only staff members can use this command.");
       }
+      
+      // In your !smurfing command, add this right after the staff permission check:
+      if (!playerData._smurfRefunds) {
+          playerData._smurfRefunds = {
+              processedMatches: new Set(),
+              processedSmurfs: new Set(),
+              refundHistory: {}
+          };
+      }
+
+      // Ensure processedSmurfs is a Set
+      if (!(playerData._smurfRefunds.processedSmurfs instanceof Set)) {
+          playerData._smurfRefunds.processedSmurfs = new Set(playerData._smurfRefunds.processedSmurfs || []);
+      }
+
+      // Ensure processedMatches is a Set  
+      if (!(playerData._smurfRefunds.processedMatches instanceof Set)) {
+          playerData._smurfRefunds.processedMatches = new Set(playerData._smurfRefunds.processedMatches || []);
+      }
       if (args.length < 3) {
         return message.reply("Usage: !smurfing @user <registered_rank> <main_rank>");
       }
@@ -1780,7 +1856,7 @@ client.on("messageCreate", async (message) => {
         }
 
         // Load match history to find all matches involving the smurf
-        const matchHistory = loadMatchHistory();
+        const matchHistory = await loadMatchHistory();
         
         // Find all matches where the smurf player participated
         const smurfMatches = matchHistory.filter(match => 
@@ -2575,13 +2651,13 @@ client.on("messageCreate", async (message) => {
 }
 
   // ---------------- !ban ----------------
-    if (cmd === "!ban") {
+    if (cmd === "!queueban") {
       if (!message.member.permissions.has("ManageGuild")) {
         return message.reply("❌ Only staff members can use this command.");
       }
 
       const userMention = args[0];
-      if (!userMention) return message.reply("Usage: !ban <@user>");
+      if (!userMention) return message.reply("Usage: !queueban <@user>");
 
       const userId = userMention.replace(/[<@!>]/g, "");
 
@@ -2603,13 +2679,13 @@ client.on("messageCreate", async (message) => {
     }
 
     // ---------------- !unban ----------------
-    if (cmd === "!unban") {
+    if (cmd === "!queueunban") {
       if (!message.member.permissions.has("ManageGuild")) {
         return message.reply("❌ Only staff members can use this command.");
       }
 
       const userMention = args[0];
-      if (!userMention) return message.reply("Usage: !unban <@user>");
+      if (!userMention) return message.reply("Usage: !queueunban <@user>");
 
       const userId = userMention.replace(/[<@!>]/g, "");
 
@@ -2650,23 +2726,82 @@ client.on("messageCreate", async (message) => {
       return message.reply("❌ There is no active match in this channel to cancel.");
     }
 
-    const { matchChannel, team1VC, team2VC, matchCategory } = match;
     const guild = message.guild;
 
     try {
-      // Delete all match-related channels if they still exist
-      if (matchChannel) await matchChannel.delete().catch(() => {});
-      if (team1VC) await team1VC.delete().catch(() => {});
-      if (team2VC) await team2VC.delete().catch(() => {});
-      if (matchCategory) await matchCategory.delete().catch(() => {});
-
-      // Remove this match from active matches
+      console.log("🛑 Starting match cancellation...");
+      
+      // CRITICAL: Remove this match from active matches FIRST to prevent further issues
       matches.delete(message.channel.id);
+      console.log("✅ Removed match from active matches");
 
-      await message.channel.send("🛑 The current match has been canceled and all match channels have been deleted.");
+      // CRITICAL: Remove all players from this match so they can queue again
+      const allPlayers = [...(match.team1 || []), ...(match.team2 || [])];
+      console.log(`🔄 Clearing ${allPlayers.length} players from match`);
+
+      // Clear players from queue if they're stuck there
+      let clearedFromQueue = 0;
+      for (const playerId of allPlayers) {
+        const index = queue.indexOf(playerId);
+        if (index > -1) {
+          queue.splice(index, 1);
+          clearedFromQueue++;
+        }
+      }
+      console.log(`✅ Cleared ${clearedFromQueue} players from queue`);
+
+      saveData();
+      await updateQueueMessage();
+
+      // Now try to delete channels - but don't let failures stop the process
+      const deletePromises = [];
+      
+      // Function to safely delete a channel by searching for it
+      async function safelyDeleteChannelByName(channelName, type = 0) {
+        if (!channelName) return;
+        
+        try {
+          // Search for the channel by name and type
+          const channels = guild.channels.cache.filter(ch => 
+            ch.name === channelName && ch.type === type
+          );
+          
+          for (const channel of channels.values()) {
+            if (channel && typeof channel.delete === 'function') {
+              await channel.delete().catch(err => {
+                console.log(`Could not delete channel ${channelName}: ${err.message}`);
+              });
+              console.log(`✅ Deleted channel: ${channelName}`);
+            }
+          }
+        } catch (err) {
+          console.log(`Channel ${channelName} already deleted or inaccessible`);
+        }
+      }
+
+      // Delete match category and channels by name (more reliable)
+      if (match.matchId) {
+        const categoryName = `Match ${match.matchId}`;
+        deletePromises.push(safelyDeleteChannelByName(categoryName, 4)); // Category type
+        deletePromises.push(safelyDeleteChannelByName("match-lobby", 0)); // Text channel
+        deletePromises.push(safelyDeleteChannelByName("🔵 Team 1 (Blue)", 2)); // Voice channel
+        deletePromises.push(safelyDeleteChannelByName("🔴 Team 2 (Red)", 2)); // Voice channel
+      }
+
+      // Wait for all deletions to complete (but don't let errors stop us)
+      await Promise.allSettled(deletePromises);
+
+      await message.channel.send("🛑 The current match has been canceled. Players have been cleared from the queue and match channels have been deleted.");
+      
     } catch (err) {
-      console.error("Error canceling match:", err);
-      await message.channel.send("⚠️ Failed to fully cancel the match. Check console for details.");
+      console.error("Error in cancelmatch:", err);
+      
+      // Even if there's an error, make sure the match is cleared
+      matches.delete(message.channel.id);
+      saveData();
+      await updateQueueMessage();
+      
+      await message.channel.send("⚠️ Match canceled with some errors, but players have been cleared from the queue.");
     }
   }
 
@@ -2920,7 +3055,7 @@ client.on("messageCreate", async (message) => {
     }
 
     // Load match history
-    const matchHistory = loadMatchHistory();
+    const matchHistory = await loadMatchHistory();
     const matchRecord = matchHistory.find(match => match.id === matchId);
     
     if (!matchRecord) {
@@ -3034,7 +3169,7 @@ client.on("messageCreate", async (message) => {
     const matchId = args[0];
 
     // Load match history
-    const matchHistory = loadMatchHistory();
+    const matchHistory = await loadMatchHistory();
     const matchRecord = matchHistory.find(match => match.id === matchId);
     
     if (!matchRecord) {
@@ -3090,7 +3225,7 @@ client.on("messageCreate", async (message) => {
       return message.reply("❌ Only staff members can use this command.");
     }
 
-    const matchHistory = loadMatchHistory();
+    const matchHistory = await loadMatchHistory();
     const recentMatches = matchHistory.slice(-10).reverse(); // Get 10 most recent matches
 
     if (recentMatches.length === 0) {
@@ -3125,7 +3260,7 @@ client.on("messageCreate", async (message) => {
 
     const matchId = args[0];
 
-    const matchHistory = loadMatchHistory();
+    const matchHistory = await loadMatchHistory();
     const matchRecord = matchHistory.find(match => match.id === matchId);
     
     if (!matchRecord) {
@@ -3718,7 +3853,12 @@ async function makeTeams(channel) {
       `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
       `**After match, vote with Team Won buttons - 6/10 votes needed**`;
   } else {
-    embedDescription = `**Manual Draft Setup Required**\n\nPlease visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create a draft lobby manually.`;
+    // FIX: Include OP.GG links even when draft fails
+    embedDescription = `**Manual Draft Setup Required**\n\nPlease visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create a draft lobby manually.\n\n` +
+      `**Team OP.GG Links:**\n` +
+      `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
+      `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
+      `**After match, vote with Team Won buttons - 6/10 votes needed**`;
   }
 
   const matchEmbed = new EmbedBuilder()
@@ -3828,10 +3968,17 @@ async function endMatch(channel, winner, isVoided = false) {
         // First win - no adjustment
         streakAdjustment = 0;
       }
+      
+      return {
+        baseLP: baseLP,
+        streakAdjustment: streakAdjustment,
+        totalLP: baseLP + streakAdjustment
+      };
+      
     } else {
       // Loss streak logic - INFINITE  
       if (player.streakType === "loss") {
-        streakAdjustment = -Math.abs(player.currentStreak); // -1 for 2nd loss, -2 for 3rd loss, -3 for 4th loss, etc.
+        streakAdjustment = Math.abs(player.currentStreak); // +1 for 2nd loss, +2 for 3rd loss, +3 for 4th loss, etc.
       } else if (player.streakType === "win") {
         // Breaking a win streak - no adjustment
         streakAdjustment = 0;
@@ -3839,128 +3986,74 @@ async function endMatch(channel, winner, isVoided = false) {
         // First loss - no adjustment
         streakAdjustment = 0;
       }
+      
+      // For losses: baseLP + streakAdjustment, but make it negative
+      const totalLoss = baseLP + streakAdjustment;
+      
+      return {
+        baseLP: baseLP,
+        streakAdjustment: streakAdjustment,
+        totalLP: -totalLoss // Always negative for losses
+      };
     }
-    
-    return {
-      baseLP: baseLP,
-      streakAdjustment: streakAdjustment,
-      totalLP: baseLP + streakAdjustment
-    };
   }
 
   // Update winners and track changes
-  winners.forEach((id) => {
-    const p = ensurePlayer(id);
-    const oldIHP = getIHP(p);
-    const oldRank = p.rank;
-    const oldDivision = p.division;
-    const oldLP = p.lp;
+winners.forEach((id) => {
+  const p = ensurePlayer(id);
+  const oldIHP = getIHP(p);
+  const oldRank = p.rank;
+  const oldDivision = p.division;
+  const oldLP = p.lp;
 
-    // Calculate streak adjustment
-    const lpCalculation = calculateStreakAdjustment(p, true);
-    
-    // Update streak
-    if (p.streakType === "win") {
-      p.currentStreak += 1;
-    } else {
-      p.currentStreak = 1;
-      p.streakType = "win";
-    }
+  // Calculate streak adjustment
+  const lpCalculation = calculateStreakAdjustment(p, true);
+  
+  // Update streak
+  if (p.streakType === "win") {
+    p.currentStreak += 1;
+  } else {
+    p.currentStreak = 1;
+    p.streakType = "win";
+  }
 
-    p.wins++;
-    p.lp += lpCalculation.totalLP;
+  p.wins++;
+  p.lp += lpCalculation.totalLP;
 
-    const newIHP = getIHP(p);
-    const newStats = IHPToRank(newIHP);
-    Object.assign(p, newStats);
+  const newIHP = getIHP(p);
+  const newStats = IHPToRank(newIHP);
+  Object.assign(p, newStats);
 
-    // Track ELO change
-    eloChanges.push({
-      id,
-      oldIHP,
-      newIHP,
-      change: newIHP - oldIHP,
-      isWinner: true,
-      oldRank,
-      oldDivision,
-      oldLP,
-      newRank: p.rank,
-      newDivision: p.division,
-      newLP: p.lp,
-      streakBonus: lpCalculation.streakAdjustment,
-      baseLP: lpCalculation.baseLP,
-      totalLP: lpCalculation.totalLP
-    });
-
-    // Check for rank changes
-    if (p.rank !== oldRank || p.division !== oldDivision) {
-      rankChanges.push({
-        id,
-        oldRank,
-        oldDivision,
-        newRank: p.rank,
-        newDivision: p.division,
-        isPromotion: newIHP > oldIHP
-      });
-    }
+  // Track ELO change
+  eloChanges.push({
+    id,
+    oldIHP,
+    newIHP,
+    change: newIHP - oldIHP,
+    isWinner: true,
+    oldRank,
+    oldDivision,
+    oldLP,
+    newRank: p.rank,
+    newDivision: p.division,
+    newLP: p.lp,
+    streakBonus: lpCalculation.streakAdjustment,
+    baseLP: lpCalculation.baseLP,
+    totalLP: lpCalculation.totalLP
   });
 
-  // Update losers and track changes
-  losers.forEach((id) => {
-    const p = ensurePlayer(id);
-    const oldIHP = getIHP(p);
-    const oldRank = p.rank;
-    const oldDivision = p.division;
-    const oldLP = p.lp;
-
-    // Calculate streak adjustment
-    const lpCalculation = calculateStreakAdjustment(p, false);
-    
-    // Update streak
-    if (p.streakType === "loss") {
-      p.currentStreak -= 1; // Goes more negative
-    } else {
-      p.currentStreak = -1;
-      p.streakType = "loss";
-    }
-
-    p.losses++;
-    p.lp += lpCalculation.totalLP; // This will be negative due to streakAdjustment
-
-    const newIHP = getIHP(p);
-    const newStats = IHPToRank(newIHP);
-    Object.assign(p, newStats);
-
-    // Track ELO change
-    eloChanges.push({
+  // Check for rank changes
+  if (p.rank !== oldRank || p.division !== oldDivision) {
+    rankChanges.push({
       id,
-      oldIHP,
-      newIHP,
-      change: newIHP - oldIHP,
-      isWinner: false,
       oldRank,
       oldDivision,
-      oldLP,
       newRank: p.rank,
       newDivision: p.division,
-      newLP: p.lp,
-      streakPenalty: lpCalculation.streakAdjustment,
-      baseLP: lpCalculation.baseLP,
-      totalLP: lpCalculation.totalLP
+      isPromotion: newIHP > oldIHP
     });
-
-    // Check for rank changes
-    if (p.rank !== oldRank || p.division !== oldDivision) {
-      rankChanges.push({
-        id,
-        oldRank,
-        oldDivision,
-        newRank: p.rank,
-        newDivision: p.division,
-        isPromotion: newIHP > oldIHP
-      });
-    }
-  });
+  }
+});
 
   // Update losers and track changes
   losers.forEach((id) => {
@@ -4058,14 +4151,7 @@ async function endMatch(channel, winner, isVoided = false) {
     const oldRankDisplay = change.oldDivision ? `${change.oldRank} ${change.oldDivision}` : change.oldRank;
     const newRankDisplay = change.newDivision ? `${change.newRank} ${change.newDivision}` : change.newRank;
     
-    let streakInfo = "";
-    if (change.streakBonus > 0) {
-      streakInfo = ` (+${change.streakBonus} streak bonus)`;
-    } else if (change.streakPenalty < 0) {
-      streakInfo = ` (${change.streakPenalty} streak penalty)`;
-    }
-    
-    return `${winLoss} <@${change.id}>: ${oldRankDisplay} ${change.oldLP}LP → ${newRankDisplay} ${change.newLP}LP (${changeSymbol} ${changeText} ELO${streakInfo})`;
+    return `${winLoss} <@${change.id}>: ${oldRankDisplay} ${change.oldLP}LP → ${newRankDisplay} ${change.newLP}LP (${changeSymbol} ${changeText} ELO)`;
   }).join('\n');
 
   // ADD MATCH ID TO THE EMBED TITLE AND DESCRIPTION
