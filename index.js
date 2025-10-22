@@ -613,6 +613,27 @@ async function updateLeaderboardChannel(guild) {
     }
   }
 
+  // Calculate average rank of all players who have played games
+  let totalIHP = 0;
+  let playerCount = 0;
+  
+  Object.keys(playerData).forEach(id => {
+    if (id.startsWith('_')) return false;
+    
+    const p = playerData[id];
+    const hasPlayedGames = (p.wins + p.losses) > 0;
+    
+    if (p && typeof p === 'object' && p.rank !== undefined && hasPlayedGames) {
+      totalIHP += getIHP(p);
+      playerCount++;
+    }
+  });
+
+  // Calculate average rank - ROUND IHP to avoid decimal LP
+  const averageIHP = playerCount > 0 ? Math.round(totalIHP / playerCount) : 0;
+  const averageRank = IHPToRank(averageIHP);
+  const averageRankDisplay = formatRankDisplay(averageRank.rank, averageRank.division, averageRank.lp);
+
   // Build leaderboard sorted by Elo/IHP - FILTER OUT SYSTEM KEYS AND PLAYERS WITH NO GAMES
   const players = Object.keys(playerData)
     .filter(id => {
@@ -669,7 +690,11 @@ async function updateLeaderboardChannel(guild) {
 
       const embed = new EmbedBuilder()
         .setTitle(i === 0 ? "🏆 Leaderboard" : `Leaderboard (cont.)`)
-        .setDescription(description)
+        .setDescription(
+          i === 0 
+            ? `**Average Rank in All Matches Played: ${averageRankDisplay}**\n\n${description}`
+            : description
+        )
         .setColor(0xffd700)
         .setTimestamp();
       embeds.push(embed);
@@ -1760,6 +1785,36 @@ client.on("messageCreate", async (message) => {
         return message.reply("❌ Failed to fetch OP.GG page. Make sure the link is correct.");
       }
     }
+    
+    // ---------------- !mystreak ----------------
+    if (cmd === "!mystreak") {
+      const userMention = args[0] || message.author.id;
+      const userId = userMention.replace(/[<@!>]/g, "") || message.author.id;
+      
+      const player = ensurePlayer(userId);
+      
+      let streakMessage = "";
+      if (player.streakType === "win") {
+        streakMessage = `🔥 You are on a **${player.currentStreak} game win streak**!\n`;;
+      } else if (player.streakType === "loss") {
+        streakMessage = `😔 You are on a **${Math.abs(player.currentStreak)} game loss streak**.\n`;
+      } else {
+        streakMessage = "📊 You have no active win or loss streak.\n";
+      }
+      
+      const embed = new EmbedBuilder()
+        .setTitle("📊 Your Current Streak")
+        .setDescription(streakMessage)
+        .addFields(
+          { name: "Wins", value: `${player.wins}`, inline: true },
+          { name: "Losses", value: `${player.losses}`, inline: true },
+          { name: "Win Rate", value: player.wins + player.losses > 0 ? `${((player.wins / (player.wins + player.losses)) * 100).toFixed(1)}%` : "0%", inline: true }
+        )
+        .setColor(player.streakType === "win" ? 0x00ff00 : player.streakType === "loss" ? 0xff0000 : 0x888888)
+        .setTimestamp();
+      
+      await message.channel.send({ embeds: [embed] });
+    }
 
     // ---------------- !adjustlp (STAFF ONLY) ----------------
     if (cmd === "!adjustlp") {
@@ -1921,33 +1976,99 @@ client.on("messageCreate", async (message) => {
       await message.channel.send({ embeds: [embed] });
     }
 
-    // ---------------- !mystreak ----------------
-    if (cmd === "!mystreak") {
-      const userMention = args[0] || message.author.id;
-      const userId = userMention.replace(/[<@!>]/g, "") || message.author.id;
-      
+    // ---------------- !addwin / !addloss (STAFF ONLY) ----------------
+    if (cmd === "!addwin" || cmd === "!addloss") {
+      if (!message.member.permissions.has("ManageGuild")) {
+        return message.reply("❌ Only staff members can use this command.");
+      }
+
+      if (args.length < 1) {
+        return message.reply(`Usage: !${cmd} <@user> [lp_change]\nExample: !${cmd} @user 20`);
+      }
+
+      const userMention = args[0];
+      const lpChange = args[1] ? parseInt(args[1]) : 20; // Default 20 LP change
+
+      if (args[1] && isNaN(lpChange)) {
+        return message.reply("❌ Please provide a valid number for LP change.");
+      }
+
+      const userId = userMention.replace(/[<@!>]/g, "");
       const player = ensurePlayer(userId);
       
-      let streakMessage = "";
-      if (player.streakType === "win") {
-        streakMessage = `🔥 You are on a **${player.currentStreak} game win streak**!\n`;;
-      } else if (player.streakType === "loss") {
-        streakMessage = `😔 You are on a **${Math.abs(player.currentStreak)} game loss streak**.\n`;
-      } else {
-        streakMessage = "📊 You have no active win or loss streak.\n";
+      if (!player.summonerName) {
+        return message.reply("❌ That user is not registered. They need to use `!register` first.");
       }
+
+      // Store old stats for display
+      const oldWins = player.wins || 0;
+      const oldLosses = player.losses || 0;
+      const oldRank = player.rank;
+      const oldDivision = player.division;
+      const oldLP = player.lp;
+      const oldIHP = getIHP(player);
+
+      const isWin = cmd === "!addwin";
+      
+      if (isWin) {
+        // Add win
+        player.wins++;
+        
+        // Update streak
+        if (player.streakType === "win") {
+          player.currentStreak++;
+        } else {
+          player.currentStreak = 1;
+          player.streakType = "win";
+        }
+        
+        // Add LP
+        player.lp += lpChange;
+      } else {
+        // Add loss
+        player.losses++;
+        
+        // Update streak
+        if (player.streakType === "loss") {
+          player.currentStreak--;
+        } else {
+          player.currentStreak = -1;
+          player.streakType = "loss";
+        }
+        
+        // Subtract LP (but don't go below 0)
+        player.lp = Math.max(0, player.lp - lpChange);
+      }
+
+      // Update rank based on new IHP
+      const newIHP = getIHP(player);
+      const newStats = IHPToRank(newIHP);
+      
+      player.rank = newStats.rank;
+      player.division = newStats.division;
+      player.lp = newStats.lp;
+
+      saveData();
+      await updateLeaderboardChannel(message.guild);
+
+      const resultType = isWin ? "Win" : "Loss";
+      const lpDisplay = isWin ? `+${lpChange}` : `-${lpChange}`;
       
       const embed = new EmbedBuilder()
-        .setTitle("📊 Your Current Streak")
-        .setDescription(streakMessage)
+        .setTitle(`🎮 ${resultType} Added`)
+        .setDescription(`${resultType} added for <@${userId}>`)
         .addFields(
-          { name: "Wins", value: `${player.wins}`, inline: true },
-          { name: "Losses", value: `${player.losses}`, inline: true },
-          { name: "Win Rate", value: player.wins + player.losses > 0 ? `${((player.wins / (player.wins + player.losses)) * 100).toFixed(1)}%` : "0%", inline: true }
+          { name: "LP Change", value: `${lpDisplay} LP`, inline: true },
+          { name: "Old Record", value: `${oldWins}W ${oldLosses}L`, inline: true },
+          { name: "New Record", value: `${player.wins}W ${player.losses}L`, inline: true },
+          { name: "Old Rank", value: formatRankDisplay(oldRank, oldDivision, oldLP), inline: true },
+          { name: "New Rank", value: formatRankDisplay(player.rank, player.division, player.lp), inline: true },
+          { name: "Current Streak", value: player.currentStreak > 0 ? `${player.currentStreak} win streak` : player.currentStreak < 0 ? `${Math.abs(player.currentStreak)} loss streak` : "No streak", inline: true }
         )
-        .setColor(player.streakType === "win" ? 0x00ff00 : player.streakType === "loss" ? 0xff0000 : 0x888888)
-        .setTimestamp();
-      
+        .setColor(isWin ? 0x00ff00 : 0xff0000)
+        .setTimestamp()
+        .setFooter({ text: `Added by ${message.author.username}` });
+
       await message.channel.send({ embeds: [embed] });
     }
 
@@ -3499,12 +3620,14 @@ async function makeTeams(channel) {
 
   const players = [...queue];
   
-  // ADDED: Exhaustive combination search for best ELO balance
+  // ADDED: Enhanced combination search that considers role preferences
   let bestTeam1 = null;
   let bestTeam2 = null;
   let bestDiff = Infinity;
+  let bestRoleScore = Infinity;
   let bestAvg1 = 0;
   let bestAvg2 = 0;
+  let usedRoleOptimization = false;
 
   // Generate all possible combinations of 5 players for team 1
   // The remaining 5 players will automatically form team 2
@@ -3528,14 +3651,17 @@ async function makeTeams(channel) {
     return result;
   }
 
-  console.log(`🔍 Starting exhaustive team combination search for ${players.length} players`);
+  console.log(`🔍 Starting enhanced team combination search for ${players.length} players`);
+  console.log(`🎯 Considering role preferences with 25 Elo tolerance`);
   
   // Generate all possible team combinations
   const allTeam1Combinations = generateCombinations(players, 5);
   
   console.log(`📊 Evaluating ${allTeam1Combinations.length} possible team combinations`);
   
-  // Evaluate each combination
+  // First pass: Find all combinations within 25 Elo difference
+  const viableCombinations = [];
+  
   for (const team1 of allTeam1Combinations) {
     const team2 = players.filter(player => !team1.includes(player));
     
@@ -3546,21 +3672,76 @@ async function makeTeams(channel) {
     const avg2 = sum2 / 5;
     const diff = Math.abs(avg1 - avg2);
     
-    // Update best combination if this one is better
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      bestTeam1 = team1;
-      bestTeam2 = team2;
-      bestAvg1 = avg1;
-      bestAvg2 = avg2;
+    // Check if within 25 Elo tolerance
+    if (diff <= 25) {
+      viableCombinations.push({ team1, team2, diff, avg1, avg2 });
     }
-    
-    // Early exit if we find a perfect balance
-    if (bestDiff === 0) break;
   }
 
-  console.log(`✅ Best team combination found with ELO difference: ${bestDiff.toFixed(2)}`);
+  console.log(`📈 Found ${viableCombinations.length} combinations within 25 Elo tolerance`);
+
+  // If we have viable combinations within 50 Elo, choose the one with best role assignment
+  if (viableCombinations.length > 0) {
+    console.log(`🎯 Selecting best team based on role preferences from ${viableCombinations.length} viable options`);
+    usedRoleOptimization = true;
+    
+    for (const { team1, team2, diff, avg1, avg2 } of viableCombinations) {
+      // Assign roles and calculate role satisfaction
+      const team1Roles = assignRoles(team1);
+      const team2Roles = assignRoles(team2);
+      
+      const team1Satisfaction = calculateTeamSatisfaction(team1, team1Roles);
+      const team2Satisfaction = calculateTeamSatisfaction(team2, team2Roles);
+      
+      // Calculate total role score (lower is better)
+      const totalRoleScore = team1Satisfaction.totalPoints + team2Satisfaction.totalPoints;
+      
+      // Update best combination if this one has better role assignment
+      if (totalRoleScore < bestRoleScore || 
+          (totalRoleScore === bestRoleScore && diff < bestDiff)) {
+        bestRoleScore = totalRoleScore;
+        bestDiff = diff;
+        bestTeam1 = team1;
+        bestTeam2 = team2;
+        bestAvg1 = avg1;
+        bestAvg2 = avg2;
+      }
+    }
+    
+    console.log(`✅ Selected team with Elo diff: ${bestDiff.toFixed(2)} and role score: ${bestRoleScore}`);
+    
+  } else {
+    // Fallback to original Elo-based matching if no combinations within 50 Elo
+    console.log(`⚠️ No teams found within 50 Elo tolerance, falling back to pure Elo balancing`);
+    
+    for (const team1 of allTeam1Combinations) {
+      const team2 = players.filter(player => !team1.includes(player));
+      
+      // Calculate average ELO for both teams
+      const sum1 = team1.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0);
+      const sum2 = team2.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0);
+      const avg1 = sum1 / 5;
+      const avg2 = sum2 / 5;
+      const diff = Math.abs(avg1 - avg2);
+      
+      // Update best combination if this one is better
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestTeam1 = team1;
+        bestTeam2 = team2;
+        bestAvg1 = avg1;
+        bestAvg2 = avg2;
+      }
+      
+      // Early exit if we find a perfect balance
+      if (bestDiff === 0) break;
+    }
+    
+    console.log(`✅ Best fallback team combination found with ELO difference: ${bestDiff.toFixed(2)}`);
+  }
+
   console.log(`🔵 Team 1 Avg ELO: ${bestAvg1.toFixed(2)}, 🔴 Team 2 Avg ELO: ${bestAvg2.toFixed(2)}`);
+  console.log(`🎯 Role optimization ${usedRoleOptimization ? 'APPLIED' : 'NOT APPLIED'} (within 50 Elo tolerance)`);
 
   // ---------------- OPTIMIZED ROLE ASSIGNMENT (MINIMIZE PREFERENCE POINTS) ----------------
   function assignRoles(team) {
@@ -3733,8 +3914,39 @@ async function makeTeams(channel) {
   const team1Satisfaction = calculateTeamSatisfaction(bestTeam1, team1Roles);
   const team2Satisfaction = calculateTeamSatisfaction(bestTeam2, team2Roles);
 
-  logRoleAssignmentToConsole(bestTeam1, bestTeam2, team1Roles, team2Roles, team1Satisfaction, team2Satisfaction);
+  // Enhanced console logging with role optimization info
+  console.log('\n🎯 ===== ENHANCED ROLE ASSIGNMENT ANALYTICS =====');
+  console.log(`📅 Match created at: ${new Date().toLocaleString()}`);
+  console.log(`⚖️  Elo Balance: ${bestDiff.toFixed(2)} ${usedRoleOptimization ? '(with role optimization)' : '(pure Elo balance)'}`);
+  
+  function formatPlayerDetails(team, roles, teamName) {
+    console.log(`\n${teamName}:`);
+    team.forEach(playerId => {
+      const player = playerData[playerId];
+      const assignedRole = roles[playerId];
+      const preferenceIndex = player.roles?.indexOf(assignedRole) ?? -1;
+      const points = preferenceIndex >= 0 ? preferenceIndex + 1 : (player.roles?.includes("Fill") ? 3 : 5);
+      const isPerfect = preferenceIndex === 0;
+      
+      console.log(`  • ${playerId}: ${assignedRole} (${points} pts) - ${player.roles?.join(' → ') || 'No prefs'} ${isPerfect ? '⭐ PERFECT' : ''}`);
+    });
+  }
 
+  formatPlayerDetails(bestTeam1, team1Roles, '🔵 TEAM 1');
+  formatPlayerDetails(bestTeam2, team2Roles, '🔴 TEAM 2');
+  
+  const team1Perfect = bestTeam1.filter(id => playerData[id].roles?.indexOf(team1Roles[id]) === 0).length;
+  const team2Perfect = bestTeam2.filter(id => playerData[id].roles?.indexOf(team2Roles[id]) === 0).length;
+  
+  console.log('\n📊 SUMMARY:');
+  console.log(`  Team 1: ${team1Satisfaction.totalPoints} total points, ${team1Perfect}/5 perfect roles`);
+  console.log(`  Team 2: ${team2Satisfaction.totalPoints} total points, ${team2Perfect}/5 perfect roles`);
+  console.log(`  Point Difference: ${Math.abs(team1Satisfaction.totalPoints - team2Satisfaction.totalPoints)}`);
+  console.log(`  Combined Perfect: ${team1Perfect + team2Perfect}/10`);
+  console.log(`  Role Optimization: ${usedRoleOptimization ? 'APPLIED ✅' : 'NOT APPLIED ⚠️'}`);
+  console.log('🎯 ===== END ENHANCED ROLE ASSIGNMENT =====\n');
+
+  // Rest of the function remains the same...
   const avg1 = Math.round(bestTeam1.reduce((a, id) => a + getIHP(ensurePlayer(id)), 0) / 5);
   const avg2 = Math.round(bestTeam2.reduce((a, id) => a + getIHP(ensurePlayer(id)), 0) / 5);
 
@@ -4108,6 +4320,14 @@ async function endMatch(channel, winner, isVoided = false) {
   const winners = winner === "1" ? team1 : team2;
   const losers = winner === "1" ? team2 : team1;
 
+  // Calculate team average Elo
+  const winnersAvgElo = winners.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / winners.length;
+  const losersAvgElo = losers.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / losers.length;
+  
+  // Calculate Elo difference adjustment (infinite scaling every 25 Elo)
+  const eloDifference = winnersAvgElo - losersAvgElo;
+  const eloAdjustment = Math.floor(Math.abs(eloDifference) / 25);
+
   // Track ELO changes and rank changes
   const eloChanges = [];
   const rankChanges = [];
@@ -4159,61 +4379,67 @@ async function endMatch(channel, winner, isVoided = false) {
   }
 
   // Update winners and track changes
-winners.forEach((id) => {
-  const p = ensurePlayer(id);
-  const oldIHP = getIHP(p);
-  const oldRank = p.rank;
-  const oldDivision = p.division;
-  const oldLP = p.lp;
+  winners.forEach((id) => {
+    const p = ensurePlayer(id);
+    const oldIHP = getIHP(p);
+    const oldRank = p.rank;
+    const oldDivision = p.division;
+    const oldLP = p.lp;
 
-  // Calculate streak adjustment
-  const lpCalculation = calculateStreakAdjustment(p, true);
-  
-  // Update streak
-  if (p.streakType === "win") {
-    p.currentStreak += 1;
-  } else {
-    p.currentStreak = 1;
-    p.streakType = "win";
-  }
+    // Calculate streak adjustment
+    const lpCalculation = calculateStreakAdjustment(p, true);
+    
+    // Apply Elo difference adjustment for winners
+    // If winners have higher Elo, they get less LP (negative adjustment)
+    // If winners have lower Elo, they get more LP (positive adjustment)
+    const eloDiffLP = eloDifference < 0 ? eloAdjustment : -eloAdjustment;
+    
+    // Update streak
+    if (p.streakType === "win") {
+      p.currentStreak += 1;
+    } else {
+      p.currentStreak = 1;
+      p.streakType = "win";
+    }
 
-  p.wins++;
-  p.lp += lpCalculation.totalLP;
+    p.wins++;
+    p.lp += lpCalculation.totalLP + eloDiffLP;
 
-  const newIHP = getIHP(p);
-  const newStats = IHPToRank(newIHP);
-  Object.assign(p, newStats);
+    const newIHP = getIHP(p);
+    const newStats = IHPToRank(newIHP);
+    Object.assign(p, newStats);
 
-  // Track ELO change
-  eloChanges.push({
-    id,
-    oldIHP,
-    newIHP,
-    change: newIHP - oldIHP,
-    isWinner: true,
-    oldRank,
-    oldDivision,
-    oldLP,
-    newRank: p.rank,
-    newDivision: p.division,
-    newLP: p.lp,
-    streakBonus: lpCalculation.streakAdjustment,
-    baseLP: lpCalculation.baseLP,
-    totalLP: lpCalculation.totalLP
-  });
-
-  // Check for rank changes
-  if (p.rank !== oldRank || p.division !== oldDivision) {
-    rankChanges.push({
+    // Track ELO change
+    eloChanges.push({
       id,
+      oldIHP,
+      newIHP,
+      change: newIHP - oldIHP,
+      isWinner: true,
       oldRank,
       oldDivision,
+      oldLP,
       newRank: p.rank,
       newDivision: p.division,
-      isPromotion: newIHP > oldIHP
+      newLP: p.lp,
+      streakBonus: lpCalculation.streakAdjustment,
+      baseLP: lpCalculation.baseLP,
+      totalLP: lpCalculation.totalLP + eloDiffLP,
+      eloAdjustment: eloDiffLP
     });
-  }
-});
+
+    // Check for rank changes
+    if (p.rank !== oldRank || p.division !== oldDivision) {
+      rankChanges.push({
+        id,
+        oldRank,
+        oldDivision,
+        newRank: p.rank,
+        newDivision: p.division,
+        isPromotion: newIHP > oldIHP
+      });
+    }
+  });
 
   // Update losers and track changes
   losers.forEach((id) => {
@@ -4226,6 +4452,11 @@ winners.forEach((id) => {
     // Calculate streak adjustment
     const lpCalculation = calculateStreakAdjustment(p, false);
     
+    // Apply Elo difference adjustment for losers
+    // If losers have higher Elo, they lose more LP (negative adjustment)
+    // If losers have lower Elo, they lose less LP (positive adjustment)
+    const eloDiffLP = eloDifference > 0 ? -eloAdjustment : eloAdjustment;
+    
     // Update streak
     if (p.streakType === "loss") {
       p.currentStreak -= 1; // Goes more negative
@@ -4235,7 +4466,7 @@ winners.forEach((id) => {
     }
 
     p.losses++;
-    p.lp += lpCalculation.totalLP; // This will be negative due to streakAdjustment
+    p.lp += lpCalculation.totalLP + eloDiffLP; // This includes both streak adjustment and Elo difference adjustment
 
     const newIHP = getIHP(p);
     const newStats = IHPToRank(newIHP);
@@ -4256,7 +4487,8 @@ winners.forEach((id) => {
       newLP: p.lp,
       streakPenalty: lpCalculation.streakAdjustment,
       baseLP: lpCalculation.baseLP,
-      totalLP: lpCalculation.totalLP
+      totalLP: lpCalculation.totalLP + eloDiffLP,
+      eloAdjustment: eloDiffLP
     });
 
     // Check for rank changes
@@ -4288,8 +4520,15 @@ winners.forEach((id) => {
       streakBonus: change.streakBonus,
       streakPenalty: change.streakPenalty,
       baseLP: change.baseLP,
-      totalLP: change.totalLP
+      totalLP: change.totalLP,
+      eloAdjustment: change.eloAdjustment
     })),
+    teamElo: {
+      winnersAvgElo: Math.round(winnersAvgElo),
+      losersAvgElo: Math.round(losersAvgElo),
+      eloDifference: Math.round(eloDifference),
+      eloAdjustment: eloAdjustment
+    },
     voided: isVoided
   };
   
@@ -4298,11 +4537,15 @@ winners.forEach((id) => {
 
   saveData();
 
+  // Calculate team average Elo for display
+  const team1AvgElo = Math.round(team1.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / team1.length);
+  const team2AvgElo = Math.round(team2.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / team2.length);
+
   // Create enhanced history embed with ELO changes and streak info
   const team1Players = team1.map(id => `<@${id}>`).join(", ") || "—";
   const team2Players = team2.map(id => `<@${id}>`).join(", ") || "—";
 
-  // Build ELO changes display with streak information
+  // Build ELO changes display WITHOUT streak information
   const eloChangesText = eloChanges.map(change => {
     const changeSymbol = change.change >= 0 ? "🟢" : "🔴";
     const changeText = change.change >= 0 ? `+${change.change}` : `${change.change}`;
@@ -4314,13 +4557,16 @@ winners.forEach((id) => {
     return `${winLoss} <@${change.id}>: ${oldRankDisplay} ${change.oldLP}LP → ${newRankDisplay} ${change.newLP}LP (${changeSymbol} ${changeText} ELO)`;
   }).join('\n');
 
+  // Elo difference information (REMOVED LP adjustment part)
+  const eloDifferenceInfo = `**Elo Difference:** ${Math.round(eloDifference)}`;
+
   // ADD MATCH ID TO THE EMBED TITLE AND DESCRIPTION
   const embed = new EmbedBuilder()
     .setTitle(`📜 Match History - ID: ${matchId}`)
-    .setDescription(`**Match ID:** ${matchId}\n**Winner:** ${winner === "1" ? "🟦 Team 1 (Blue)" : "🟥 Team 2 (Red)"}`)
+    .setDescription(`**Match ID:** ${matchId}\n**Winner:** ${winner === "1" ? "🟦 Team 1 (Blue)" : "🟥 Team 2 (Red)"}\n${eloDifferenceInfo}`)
     .addFields(
-      { name: "🟦 Team 1 (Blue)", value: team1Players, inline: false },
-      { name: "🟥 Team 2 (Red)", value: team2Players, inline: false },
+      { name: `🟦 Team 1 (Blue) - Avg Elo: ${team1AvgElo}`, value: team1Players, inline: false },
+      { name: `🟥 Team 2 (Red) - Avg Elo: ${team2AvgElo}`, value: team2Players, inline: false },
       { name: "📈 ELO Changes", value: eloChangesText || "No changes", inline: false }
     )
     .setColor(winner === "1" ? 0x3498db : 0xe74c3c)
