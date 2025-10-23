@@ -1572,7 +1572,8 @@ async function post4funQueueMessage(channel) {
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("join4fun").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("leave4fun").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger)
+    new ButtonBuilder().setCustomId("leave4fun").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("duo4fun").setLabel("🤝 Request Duo").setStyle(ButtonStyle.Primary)
   );
 
   const embed = build4funQueueEmbed();
