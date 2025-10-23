@@ -15,6 +15,10 @@ const {
   EmbedBuilder,
   StringSelectMenuBuilder, 
   StringSelectMenuOptionBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  UserSelectMenuBuilder
 } = require("discord.js");
 
 const client = new Client({
@@ -51,16 +55,25 @@ async function connectDB() {
 const DATA_FILE = "playerData.json";
 const QUEUE_SIZE = 10;
 const MATCH_HISTORY_FILE = "matchHistory.json";
+const QUEUE4FUN_SIZE = 10;
+const FUN_POINTS_PER_GAME = 50;
+const DUO_REQUEST_EXPIRY = 10 * 60 * 1000; // Duo request expiration time (10 minutes)
 
 let queue = [];
-let matches = new Map();
+let queue4fun = [];
 let queueMessage;
+let queueMessage4fun;
 let leaderboardMessage;
+let leaderboardMessage4fun;
+let matches = new Map();
+let matches4fun = new Map();
 let activeReadyCheck = null;
+let active4funReadyCheck = null;
 let queueEnabled = true;
 let bannedUsers = new Set();
 let requestCount = 0;
 let saveDataTimeout = null;
+let pendingDuoRequests = new Map(); // key: requesterId, value: { targetId, timestamp }
 
 // Add block system
 let userBlocks = new Map(); // userId -> Set of blocked user IDs
@@ -145,9 +158,17 @@ function ensurePlayer(id) {
       lp: 0, 
       wins: 0, 
       losses: 0,
-      roles: [], // Make sure roles array is initialized
-      currentStreak: 0, // 0 = no streak, positive = win streak, negative = loss streak
-      streakType: "none" // "win", "loss", or "none"
+      roles: [],
+      currentStreak: 0,
+      streakType: "none",
+      // 4fun stats
+      fun: {
+        points: 0,
+        wins: 0,
+        losses: 0,
+        matchesPlayed: 0,
+        hiddenMMR: 0 // Will be set based on main rank when they first play
+      }
     };
   }
   
@@ -162,12 +183,24 @@ function ensurePlayer(id) {
   if (player.currentStreak === undefined) player.currentStreak = 0;
   if (player.streakType === undefined) player.streakType = "none";
   
+  // Ensure 4fun stats exist
+  if (!player.fun) {
+    player.fun = {
+      points: 0,
+      wins: 0,
+      losses: 0,
+      matchesPlayed: 0,
+      hiddenMMR: 0
+    };
+  }
+  
   return playerData[id];
 }
 
 // ---------------- MATCH ID GENERATION ----------------
 let matchIdCounter = 0;
 let matchIdInitialized = false;
+let matchIdLock = false;
 
 async function getNextMatchId() {
   // Wait for lock if another match is being created
@@ -731,6 +764,104 @@ async function updateLeaderboardChannel(guild) {
   }
 }
 
+async function update4funLeaderboardChannel(guild) {
+  const channelName = "4fun-leaderboard";
+  let lbChannel = guild.channels.cache.find(c => c.name === channelName && c.type === 0);
+  if (!lbChannel) {
+    lbChannel = await guild.channels.create({ name: channelName, type: 0 });
+  }
+
+  if (!leaderboardMessage4fun || !leaderboardMessage4fun.length) {
+    const fetched = await lbChannel.messages.fetch({ limit: 20 });
+    const existing = fetched.filter(m => m.author.id === client.user.id && m.embeds.length > 0);
+    if (existing.size > 0) {
+      leaderboardMessage4fun = Array.from(existing.values()).sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+      console.log(`Found ${leaderboardMessage4fun.length} existing 4fun leaderboard messages.`);
+    } else {
+      leaderboardMessage4fun = [];
+    }
+  }
+
+  // Build 4fun leaderboard - only include players that have played 4fun matches
+  const players = Object.keys(playerData)
+    .filter(id => {
+      if (id.startsWith('_')) return false;
+      const p = playerData[id];
+      const hasPlayed4fun = p.fun?.matchesPlayed > 0;
+      return p && typeof p === 'object' && p.fun && hasPlayed4fun;
+    })
+    .map(id => {
+      const p = playerData[id];
+      const fun = p.fun;
+      const normalRankDisplay = formatRankDisplay(p.rank, p.division, p.lp);
+      const wr = fun.matchesPlayed > 0 ? ((fun.wins / fun.matchesPlayed) * 100).toFixed(1) : "0.0";
+      return {
+        id,
+        normalRankDisplay,
+        points: fun.points,
+        wins: fun.wins,
+        losses: fun.losses,
+        wr,
+        matchesPlayed: fun.matchesPlayed
+      };
+    })
+    .sort((a, b) => b.points - a.points); // highest 4fun points first
+
+  const chunkSize = 25;
+  const embeds = [];
+  
+  if (players.length === 0) {
+    const embed = new EmbedBuilder()
+      .setTitle("🏆 4Fun Leaderboard")
+      .setDescription("No players have completed any 4fun matches yet. Play your first 4fun match to appear on the leaderboard!")
+      .setColor(0xff00ff)
+      .setTimestamp();
+    embeds.push(embed);
+  } else {
+    for (let i = 0; i < players.length; i += chunkSize) {
+      const chunk = players.slice(i, i + chunkSize);
+      const description = chunk
+        .map((p, idx) => {
+          const line1 = `#${i + idx + 1} • ${p.normalRankDisplay} • ${p.points} 4fun pts`;
+          const line2 = `<@${p.id}> | W: ${p.wins} | L: ${p.losses} | WR: ${p.wr}% | GP: ${p.matchesPlayed}`;
+          return `${line1}\n${line2}`;
+        })
+        .join("\n\n");
+
+      const embed = new EmbedBuilder()
+        .setTitle(i === 0 ? "🏆 4Fun Leaderboard" : `4Fun Leaderboard (cont.)`)
+        .setDescription(description)
+        .setColor(0xff00ff)
+        .setTimestamp();
+      embeds.push(embed);
+    }
+  }
+
+  if (leaderboardMessage4fun && leaderboardMessage4fun.length) {
+    for (let i = 0; i < embeds.length; i++) {
+      const embed = embeds[i];
+      if (leaderboardMessage4fun[i]) {
+        await leaderboardMessage4fun[i].edit({ embeds: [embed] }).catch(() => {});
+      } else {
+        const msg = await lbChannel.send({ embeds: [embed] });
+        leaderboardMessage4fun.push(msg);
+      }
+    }
+    if (leaderboardMessage4fun.length > embeds.length) {
+      for (let i = embeds.length; i < leaderboardMessage4fun.length; i++) {
+        await leaderboardMessage4fun[i].delete().catch(() => {});
+      }
+      leaderboardMessage4fun = leaderboardMessage4fun.slice(0, embeds.length);
+    }
+  } else {
+    leaderboardMessage4fun = [];
+    for (const embed of embeds) {
+      const msg = await lbChannel.send({ embeds: [embed] });
+      leaderboardMessage4fun.push(msg);
+    }
+  }
+}
+
 // ---------------- READY CHECK ----------------
 async function startReadyCheck(channel) {
   // Safety Check in startReadyCheck
@@ -967,6 +1098,206 @@ async function startReadyCheck(channel) {
   });
 }
 
+async function start4funReadyCheck(channel) {
+  if (queue4fun.length !== QUEUE4FUN_SIZE) {
+    console.warn(`⚠️ 4fun Ready check attempted with ${queue4fun.length} players, expected ${QUEUE4FUN_SIZE}`);
+    return;
+  }
+  
+  if (active4funReadyCheck) {
+    console.warn("⚠️ 4fun Ready check already active, ignoring duplicate");
+    return;
+  }
+
+  const participants = [...queue4fun];
+  const ready = new Set();
+  const declined = new Set();
+  const TIMEOUT = 60;
+  const endTime = Date.now() + (TIMEOUT * 1000);
+
+  let pendingUpdate = false;
+  let updateTimeout = null;
+  const DEBOUNCE_DELAY = 300;
+
+  const createReadyCheckEmbed = () => {
+    const readyArray = Array.from(ready);
+    const waitingArray = participants.filter(id => !ready.has(id) && !declined.has(id));
+    const declinedArray = Array.from(declined);
+    
+    const embed = new EmbedBuilder()
+      .setTitle("⚔️ 4Fun Ready Check")
+      .setDescription(
+        `${participants.length} players have queued!\n\n` +
+        `**Click ✅ Ready if you're ready**\n` +
+        `**Click ❌ Decline if you can't**\n\n` +
+        `⏳ **Time remaining:** ${createDiscordTimestamp(endTime, 'R')}\n\n` +
+        `**Ready (${ready.size}/${participants.length}):**\n` +
+        `${readyArray.length > 0 ? readyArray.map(id => `<@${id}> ✅`).join('\n') : 'None yet'}\n\n` +
+        `**Waiting for response:**\n` +
+        `${waitingArray.length > 0 ? waitingArray.map(id => `<@${id}> ⏳`).join('\n') : 'None'}`
+      )
+      .setColor(0x00ffff);
+
+    if (declinedArray.length > 0) {
+      embed.addFields({
+        name: "❌ Declined",
+        value: declinedArray.map(id => `<@${id}>`).join('\n'),
+      });
+    }
+
+    return embed;
+  };
+
+  const debouncedUpdate = async () => {
+    if (updateTimeout) {
+      clearTimeout(updateTimeout);
+    }
+    
+    updateTimeout = setTimeout(async () => {
+      try {
+        const updatedEmbed = createReadyCheckEmbed();
+        await msg.edit({ embeds: [updatedEmbed] }).catch(() => {});
+        pendingUpdate = false;
+      } catch (error) {
+        console.log('Edit error during 4fun ready check:', error.message);
+        pendingUpdate = false;
+      }
+    }, DEBOUNCE_DELAY);
+  };
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("ready4fun")
+      .setLabel("✅ Ready")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId("notready4fun")
+      .setLabel("❌ Decline")
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  const msg = await channel.send({
+    content: participants.map((id) => `<@${id}>`).join(" "),
+    embeds: [createReadyCheckEmbed()],
+    components: [row],
+  });
+
+  const collector = msg.createMessageComponentCollector({ time: TIMEOUT * 1000 });
+  active4funReadyCheck = { msg, collector };
+
+  collector.on("collect", async (i) => {
+    if (!participants.includes(i.user.id)) {
+        return i.reply({ content: "You're not in this 4fun queue.", ephemeral: true });
+    }
+
+    if (i.customId === "notready4fun") {
+        console.log("4fun Decline button clicked by:", i.user.id);
+        
+        queue4fun = queue4fun.filter((id) => id !== i.user.id);
+        declined.add(i.user.id);
+        saveData();
+        await update4funQueueMessage();
+
+        await i.reply({
+            content: `❌ You have declined the 4fun queue.`,
+            ephemeral: true,
+        });
+        
+        await msg.channel.send({
+            content: `⚠️ <@${i.user.id}> declined the 4fun ready check.`
+        });
+        
+        collector.stop("declined");
+        return;
+    }
+
+    if (ready.has(i.user.id)) {
+        await i.deferUpdate().catch(() => {});
+        return;
+    }
+
+    ready.add(i.user.id);
+    debouncedUpdate();
+
+    await i.deferUpdate().catch((err) => {
+      if (err.code !== 10062) console.error("4fun Button deferUpdate error:", err);
+    });
+
+    if (ready.size === participants.length) {
+      if (updateTimeout) {
+        clearTimeout(updateTimeout);
+      }
+      try {
+        const updatedEmbed = createReadyCheckEmbed();
+        await msg.edit({ embeds: [updatedEmbed] }).catch(() => {});
+      } catch (error) {
+        console.log('Edit error during 4fun ready check:', error.message);
+      }
+      collector.stop("all_ready");
+    }
+    return;
+  });
+  
+  collector.on("end", async (_, reason) => {
+    if (updateTimeout) {
+      clearTimeout(updateTimeout);
+    }
+    active4funReadyCheck = null;
+
+    let description = "";
+    if (reason === "all_ready") {
+        description = "✅ All players ready. 4Fun Match is starting!";
+    } else if (reason === "declined") {
+        description = "❌ A player declined the 4fun ready check. Match canceled.";
+    } else {
+        description = "⌛ 4fun Ready check timed out. Match canceled.";
+        
+        const notReady = participants.filter((id) => !ready.has(id) && !declined.has(id));
+        if (notReady.length > 0) {
+            queue4fun = queue4fun.filter((id) => !notReady.includes(id));
+            saveData();
+            await update4funQueueMessage();
+            
+            await msg.channel.send({
+                content: `⌛ 4fun Ready check timed out. The following players did not respond: ${notReady.map(id => `<@${id}>`).join(", ")}`
+            });
+        }
+    }
+
+    const finalEmbed = EmbedBuilder.from(createReadyCheckEmbed())
+        .setDescription(description)
+        .setColor(
+            reason === "all_ready"
+                ? 0x00ff00
+                : reason === "declined"
+                ? 0xff0000
+                : 0xffa500
+        );
+
+    await msg.edit({ embeds: [finalEmbed], components: [] }).catch(() => {});
+
+    setTimeout(async () => {
+      try {
+        const freshMessage = await msg.channel.messages.fetch(msg.id).catch(() => null);
+        if (freshMessage && freshMessage.deletable) {
+          await freshMessage.delete();
+          console.log('✅ 4fun Ready check embed deleted after completion');
+        }
+      } catch (error) {
+        if (error.code !== 10008) {
+          console.error('Error deleting 4fun ready check embed:', error);
+        }
+      }
+    }, 50000);
+
+    if (reason === "all_ready") {
+        await make4funTeams(channel);
+    } else {
+        await update4funQueueMessage();
+    }
+  });
+}
+
 // Post role selection in #how-to-play
 async function postRoleSelectionMessage(channel) {
   const buttonRow = new ActionRowBuilder().addComponents(
@@ -1146,6 +1477,61 @@ function buildQueueEmbed() {
   return embed;
 }
 
+function build4funQueueEmbed() {
+  // Group duos in queue
+  const duosInQueue = [];
+  const soloInQueue = [];
+  const processed = new Set();
+
+  queue4fun.forEach(playerId => {
+    if (processed.has(playerId)) return;
+
+    const player = ensurePlayer(playerId);
+    if (player.fun.duoPartner && queue4fun.includes(player.fun.duoPartner)) {
+      duosInQueue.push([playerId, player.fun.duoPartner]);
+      processed.add(playerId);
+      processed.add(player.fun.duoPartner);
+    } else {
+      soloInQueue.push(playerId);
+      processed.add(playerId);
+    }
+  });
+
+  let queueDescription = "";
+
+  // Display duos
+  if (duosInQueue.length > 0) {
+    queueDescription += "**🤝 Duos:**\n";
+    duosInQueue.forEach((duo, index) => {
+      queueDescription += `${index + 1}. <@${duo[0]}> + <@${duo[1]}>\n`;
+    });
+    queueDescription += "\n";
+  }
+
+  // Display solo players
+  if (soloInQueue.length > 0) {
+    queueDescription += "**👤 Solo Players:**\n";
+    soloInQueue.forEach((playerId, index) => {
+      queueDescription += `${duosInQueue.length + index + 1}. <@${playerId}>\n`;
+    });
+  }
+
+  if (queue4fun.length === 0) {
+    queueDescription = "The 4fun queue is currently empty.";
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle("🎉 4Fun Queue - Howling Abyss 5v5 Blind Pick")
+    .setColor(0x00ff00)
+    .setDescription(queueDescription + `\nStatus: **OPEN**`)
+    .setFooter({ 
+      text: `Queue: ${queue4fun.length}/${QUEUE4FUN_SIZE} | Duos: ${duosInQueue.length}` 
+    })
+    .setTimestamp();
+
+  return embed;
+}
+
 // ---------------- QUEUE EMBED ----------------
 async function postQueueMessage(channel) {
   // Check for an existing queue message (from the bot)
@@ -1169,6 +1555,49 @@ async function postQueueMessage(channel) {
 
   const embed = buildQueueEmbed();
   queueMessage = await channel.send({ embeds: [embed], components: [row] });
+}
+
+async function post4funQueueMessage(channel) {
+  // Check for an existing queue message
+  const existing = (await channel.messages.fetch({ limit: 10 }))
+    .filter(m => m.author.id === client.user.id && m.embeds.length && m.embeds[0].title === "🎉 4Fun Queue")
+    .first();
+
+  if (existing) {
+    console.log("4Fun Queue message already exists — reusing it.");
+    queueMessage4fun = existing;
+    await update4funQueueMessage();
+    return;
+  }
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId("join4fun").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId("leave4fun").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger)
+  );
+
+  const embed = build4funQueueEmbed();
+  queueMessage4fun = await channel.send({ embeds: [embed], components: [row] });
+}
+
+let update4funQueueTimeout = null;
+async function update4funQueueMessage() {
+  trackRequest();
+  if (!queueMessage4fun) return;
+
+  if (update4funQueueTimeout) {
+    clearTimeout(update4funQueueTimeout);
+  }
+
+  update4funQueueTimeout = setTimeout(async () => {
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId("join4fun").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("leave4fun").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("duo4fun").setLabel("🤝 Request Duo").setStyle(ButtonStyle.Primary) // ADD THIS
+    );
+
+    const embed = build4funQueueEmbed();
+    await queueMessage4fun.edit({ embeds: [embed], components: [row] });
+  }, 250);
 }
 
 let updateQueueTimeout = null;
@@ -1270,6 +1699,99 @@ function logRoleAssignmentToConsole(bestTeam1, bestTeam2, team1Roles, team2Roles
 }
 
 client.on("interactionCreate", async (interaction) => {
+  if (interaction.isUserSelectMenu() && interaction.customId === 'duo_partner_select') {
+    const selectedUserId = interaction.values[0]; // The selected user's ID
+    const requesterId = interaction.user.id;
+
+    // Use the same validation logic you had in your modal
+    if (selectedUserId === requesterId) {
+        return interaction.reply({
+            content: "❌ You cannot request a duo with yourself.",
+            ephemeral: true
+        });
+    }
+
+    const requester = ensurePlayer(requesterId);
+    const target = ensurePlayer(selectedUserId);
+
+    // Validate target player
+    if (!target.summonerName) {
+        return interaction.reply({
+            content: "❌ That player is not registered. They need to use `!register` first.",
+            ephemeral: true
+        });
+    }
+
+    if (target.fun.duoPartner) {
+        return interaction.reply({
+            content: `❌ <@${selectedUserId}> is already in a duo with <@${target.fun.duoPartner}>.`,
+            ephemeral: true
+        });
+    }
+
+    // Check if target is in queue
+    const targetInQueue = queue4fun.includes(selectedUserId);
+
+    try {
+        const targetUser = await client.users.fetch(selectedUserId);
+        
+        const embed = new EmbedBuilder()
+            .setTitle("🤝 Duo Request")
+            .setDescription(`<@${requesterId}> wants to form a duo with you for 4fun queue!`)
+            .addFields(
+                { name: "Requester", value: `<@${requesterId}>`, inline: true },
+                { name: "Current Queue", value: targetInQueue ? "✅ You are in queue" : "❌ You are not in queue", inline: true },
+                { name: "Expires", value: "10 minutes", inline: true }
+            )
+            .setColor(0x0099FF)
+            .setTimestamp();
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`accept_duo_${requesterId}`)
+                .setLabel("✅ Accept")
+                .setStyle(ButtonStyle.Success),
+            new ButtonBuilder()
+                .setCustomId(`decline_duo_${requesterId}`)
+                .setLabel("❌ Decline")
+                .setStyle(ButtonStyle.Danger)
+        );
+
+        await targetUser.send({ 
+            content: `You have received a duo request from <@${requesterId}>!`,
+            embeds: [embed], 
+            components: [row] 
+        });
+
+        // Store pending request
+        pendingDuoRequests.set(requesterId, {
+            targetId: selectedUserId,
+            timestamp: Date.now()
+        });
+
+        // Set expiration timer
+        setTimeout(() => {
+            if (pendingDuoRequests.has(requesterId)) {
+                pendingDuoRequests.delete(requesterId);
+                console.log(`⏰ Duo request from ${requesterId} expired`);
+            }
+        }, DUO_REQUEST_EXPIRY);
+
+        // Update the original message to remove the select menu
+        await interaction.update({
+            content: `✅ Duo request sent to <@${selectedUserId}>! They have 10 minutes to accept.`,
+            components: []
+        });
+
+    } catch (error) {
+        console.error("Failed to send DM:", error);
+        await interaction.reply({
+            content: "❌ Could not send duo request. The player may have DMs disabled.",
+            ephemeral: true
+        });
+    }
+  }
+
   // ---------------- BUTTONS ----------------
   if (interaction.isButton()) {
     const id = interaction.user.id;
@@ -1613,6 +2135,275 @@ client.on("interactionCreate", async (interaction) => {
       const multiLink = `https://www.op.gg/lol/multisearch/na?summoners=${summoners.join("%2C")}`;
       return interaction.reply({ content: `🌐 [Multi OP.GG Link for Queue](${multiLink})`, ephemeral: true });
     }
+
+    if (interaction.customId.startsWith("accept_duo_") || interaction.customId.startsWith("decline_duo_")) {
+      // This is a DM interaction
+      const requesterId = interaction.customId.split("_")[2];
+      const targetId = interaction.user.id;
+      const isAccept = interaction.customId.startsWith("accept_duo");
+
+      // Verify the request exists and is for this user
+      const request = pendingDuoRequests.get(requesterId);
+      if (!request || request.targetId !== targetId) {
+        return interaction.reply({
+          content: "❌ This duo request has expired or is invalid.",
+          ephemeral: true
+        });
+      }
+
+      // Remove from pending requests
+      pendingDuoRequests.delete(requesterId);
+
+      if (isAccept) {
+        // Form the duo
+        const requester = ensurePlayer(requesterId);
+        const target = ensurePlayer(targetId);
+
+        requester.fun.duoPartner = targetId;
+        target.fun.duoPartner = requesterId;
+        
+        saveData();
+
+        // Send confirmation to both players
+        const successEmbed = new EmbedBuilder()
+          .setTitle("✅ Duo Partnership Formed!")
+          .setDescription(`You are now duo partners with <@${requesterId}>!`)
+          .addFields(
+            { name: "How to Play", value: "Both players must join the 4fun queue separately. You will automatically be placed on the same team.", inline: false },
+            { name: "Commands", value: "Use `!duostatus` to check your duo\nUse `!duobreak` to dissolve the duo", inline: false }
+          )
+          .setColor(0x00ff00)
+          .setTimestamp();
+
+        await interaction.reply({ embeds: [successEmbed] });
+
+        // Notify the requester
+        try {
+          const requesterUser = await client.users.fetch(requesterId);
+          await requesterUser.send({
+            content: `🎉 <@${targetId}> accepted your duo request! You are now partners.`,
+            embeds: [successEmbed]
+          });
+        } catch (error) {
+          console.error("Could not notify requester:", error);
+        }
+
+        // Notify in queue channel if both are in queue
+        const queueChannel = client.channels.cache.find(c => c.name === "4fun-queue");
+        if (queueChannel && queue4fun.includes(requesterId) && queue4fun.includes(targetId)) {
+          await queueChannel.send({
+            content: `🤝 <@${requesterId}> and <@${targetId}> have formed a duo! Both are in queue and will be teamed together.`
+          });
+        }
+
+      } else {
+        // Decline the request
+        await interaction.reply({
+          content: "❌ You have declined the duo request.",
+          ephemeral: true
+        });
+
+        // Notify the requester
+        try {
+          const requesterUser = await client.users.fetch(requesterId);
+          await requesterUser.send({
+            content: `❌ <@${targetId}> declined your duo request.`
+          });
+        } catch (error) {
+          console.error("Could not notify requester:", error);
+        }
+      }
+    }
+
+    if (interaction.customId === 'duo4fun') {
+      const requesterId = interaction.user.id;
+      const requester = ensurePlayer(requesterId);
+
+      // Validation checks
+      if (!requester.summonerName) {
+          return interaction.reply({
+              content: "❌ You must be registered with `!register` before requesting a duo.",
+              ephemeral: true
+          });
+      }
+
+      if (requester.fun.duoPartner) {
+          return interaction.reply({
+              content: `❌ You are already in a duo with <@${requester.fun.duoPartner}>. Use \`!duobreak\` to dissolve it first.`,
+              ephemeral: true
+          });
+      }
+
+      // Check for existing pending request
+      if (pendingDuoRequests.has(requesterId)) {
+          return interaction.reply({
+              content: "❌ You already have a pending duo request. Please wait for it to be accepted or expire.",
+              ephemeral: true
+          });
+      }
+
+      // Create the user select menu with CORRECT method
+      const selectMenuRow = new ActionRowBuilder()
+          .addComponents(
+              new UserSelectMenuBuilder()
+                  .setCustomId('duo_partner_select')
+                  .setPlaceholder('Select your duo partner...')
+                  .setMaxValues(1) // ✅ CORRECTED: Use setMaxValues instead of setMaxUsers
+          );
+
+      await interaction.reply({
+          content: 'Please select your duo partner from the list below:',
+          components: [selectMenuRow],
+          ephemeral: true
+      });
+    }
+
+    // 4fun queue buttons
+    if (interaction.customId === "join4fun") {
+      const id = interaction.user.id;
+      ensurePlayer(id);
+
+      // Check if in timeout
+      const timeoutStatus = isUserInTimeout(interaction.user.id);
+      if (timeoutStatus.inTimeout) {
+        const timeLeft = formatTimeLeft(timeoutStatus.timeLeft);
+        return interaction.reply({
+          content: `⏰ You are currently in a timeout penalty and cannot join the queue for ${timeLeft}.`,
+          ephemeral: true,
+        });
+      }
+
+      // Check if in any active match
+      const isInAnyMatch = Array.from(matches.values()).some(match => 
+        match.team1.includes(id) || match.team2.includes(id)
+      ) || Array.from(matches4fun.values()).some(match => 
+        match.team1.includes(id) || match.team2.includes(id)
+      );
+      
+      if (isInAnyMatch) {
+        return interaction.reply({
+          content: "⚠️ You are currently in an active match and cannot join the queue until it ends.",
+          ephemeral: true,
+        });
+      }
+
+      if (!playerData[id].summonerName) {
+        return interaction.reply({
+          content: "❌ You must **register** first with !register <OP.GG link> before joining the 4fun queue.",
+          ephemeral: true,
+        });
+      }
+
+      if (queue4fun.includes(id)) {
+        return interaction.reply({ content: "⚠️ You're already in the 4fun queue.", ephemeral: true });
+      }
+
+      if (queue4fun.length >= QUEUE4FUN_SIZE) {
+        return interaction.reply({ 
+          content: "⚠️ The 4fun queue is already full. Please wait for the next queue", 
+          ephemeral: true 
+        });
+      }
+
+      queue4fun.push(id);
+      saveData();
+      await update4funQueueMessage();
+      
+      if (queue4fun.length === QUEUE4FUN_SIZE && !active4funReadyCheck) {
+        await start4funReadyCheck(interaction.channel);
+      }
+      
+      await interaction.deferUpdate().catch(err => { 
+        if (err.code !== 10062) console.error("4fun deferUpdate failed:", err); 
+      });
+    }
+
+    else if (interaction.customId === "leave4fun") {
+      const id = interaction.user.id;
+      
+      if (!queue4fun.includes(id)) {
+        try {
+          await interaction.deferUpdate();
+        } catch (err) {
+          if (err.code !== 10062) console.error("4fun Leave deferUpdate failed:", err);
+        }
+        return;
+      }
+
+      queue4fun = queue4fun.filter((x) => x !== id);
+      saveData();
+      await update4funQueueMessage();
+
+      try {
+        await interaction.deferUpdate();
+      } catch (err) {
+        if (err.code !== 10062) console.error("4fun Leave deferUpdate failed:", err);
+      }
+    }
+
+    // 4fun match reporting buttons
+    else if (interaction.customId.startsWith("report_4fun_win_")) {
+      const team = interaction.customId.split("_")[3];
+      
+      const match = matches4fun.get(interaction.channelId);
+      if (!match) {
+        return interaction.reply({ 
+          content: "❌ No active 4fun match found in this channel.", 
+          ephemeral: true 
+        });
+      }
+      
+      const playerId = interaction.user.id;
+      const isStaff = interaction.member.permissions.has("ManageGuild");
+      
+      if (isStaff) {
+        await end4funMatch(interaction.channel, team);
+        return interaction.reply({ 
+          content: `✅ Staff override: 4fun Match result recorded! Team ${team} wins!`, 
+          ephemeral: true 
+        });
+      }
+      
+      const isInMatch = match.team1.includes(playerId) || match.team2.includes(playerId);
+      if (!isInMatch) {
+        return interaction.reply({ 
+          content: "❌ You are not a player in this 4fun match and cannot vote.", 
+          ephemeral: true 
+        });
+      }
+      
+      match.votes.team1.delete(playerId);
+      match.votes.team2.delete(playerId);
+      
+      if (team === "1") {
+        match.votes.team1.add(playerId);
+      } else {
+        match.votes.team2.add(playerId);
+      }
+      
+      const totalVotes = match.votes.team1.size + match.votes.team2.size;
+      const team1Votes = match.votes.team1.size;
+      const team2Votes = match.votes.team2.size;
+      
+      let voteMessage = `🗳️ You voted for Team ${team}!\n\n`;
+      voteMessage += `**Current Vote Count:**\n`;
+      voteMessage += `🔵 Team 1: ${team1Votes} votes\n`;
+      voteMessage += `🔴 Team 2: ${team2Votes} votes\n`;
+      voteMessage += `📊 Total votes: ${totalVotes}/10 players\n\n`;
+      
+      if (team1Votes >= 6) {
+        voteMessage += `🏆 **Team 1 has reached 6 votes! 4Fun Match ending...**`;
+        await interaction.reply({ content: voteMessage, ephemeral: false });
+        await end4funMatch(interaction.channel, "1");
+      } else if (team2Votes >= 6) {
+        voteMessage += `🏆 **Team 2 has reached 6 votes! 4Fun Match ending...**`;
+        await interaction.reply({ content: voteMessage, ephemeral: false });
+        await end4funMatch(interaction.channel, "2");
+      } else {
+        voteMessage += `*Need 6 votes for one team to end the 4fun match*`;
+        await interaction.reply({ content: voteMessage, ephemeral: true });
+      }
+    }
   }
 
   // ---------------- SELECT MENUS ----------------
@@ -1786,6 +2577,52 @@ client.on("messageCreate", async (message) => {
       }
     }
     
+    // 4fun force ready command
+    if (cmd === "!4funforceready") {
+      if (!message.member.permissions.has("ManageGuild")) {
+        return message.reply("❌ Only staff members can use this command.");
+      }
+
+      if (!queue4fun || queue4fun.length < QUEUE4FUN_SIZE) {
+        return message.reply("⚠️ There isn't an active 4fun ready check right now.");
+      }
+
+      message.channel.send("✅ 4Fun Force-ready activated — all players are now marked ready!");
+
+      if (active4funReadyCheck && active4funReadyCheck.collector) {
+        try {
+          const curMsg = active4funReadyCheck.msg;
+          try {
+            const infoEmbed = EmbedBuilder.from(curMsg.embeds?.[0] || embed)
+              .setDescription("✅ 4Fun Force-ready activated by staff. Match is starting!")
+              .setColor(0x00ff00);
+            await curMsg.edit({ embeds: [infoEmbed], components: [] }).catch(() => {});
+          } catch (e) { }
+
+          active4funReadyCheck.collector.stop("all_ready");
+        } catch (err) {
+          console.error("Error stopping active 4fun ready check:", err);
+          await make4funTeams(message.channel);
+        }
+      } else {
+        await make4funTeams(message.channel);
+      }
+    }
+
+    // 4fun end match command
+    if (cmd === "!4funendmatch") {
+      if (!message.member.permissions.has("ManageGuild")) {
+        return message.reply("❌ Only staff members can use this command.");
+      }
+      
+      const team = args[0];
+      if (!team || (team !== "1" && team !== "2")) {
+        return message.reply("Usage: !4funendmatch <1|2>");
+      }
+      
+      end4funMatch(message.channel, team);
+    }
+
     // ---------------- !mystreak ----------------
     if (cmd === "!mystreak") {
       const userMention = args[0] || message.author.id;
@@ -3034,42 +3871,37 @@ client.on("messageCreate", async (message) => {
       saveData();
       await updateQueueMessage();
 
-      // Now try to delete channels - but don't let failures stop the process
+      // Delete the specific channels for THIS match only
       const deletePromises = [];
       
-      // Function to safely delete a channel by searching for it
-      async function safelyDeleteChannelByName(channelName, type = 0) {
-        if (!channelName) return;
-        
-        try {
-          // Search for the channel by name and type
-          const channels = guild.channels.cache.filter(ch => 
-            ch.name === channelName && ch.type === type
-          );
-          
-          for (const channel of channels.values()) {
-            if (channel && typeof channel.delete === 'function') {
-              await channel.delete().catch(err => {
-                console.log(`Could not delete channel ${channelName}: ${err.message}`);
-              });
-              console.log(`✅ Deleted channel: ${channelName}`);
-            }
-          }
-        } catch (err) {
-          console.log(`Channel ${channelName} already deleted or inaccessible`);
-        }
+      // Delete the exact voice channels from match data (not by name)
+      if (match.team1VC) {
+        deletePromises.push(match.team1VC.delete().catch(err => {
+          console.log(`Could not delete team1 voice channel: ${err.message}`);
+        }));
+      }
+      
+      if (match.team2VC) {
+        deletePromises.push(match.team2VC.delete().catch(err => {
+          console.log(`Could not delete team2 voice channel: ${err.message}`);
+        }));
+      }
+      
+      // Delete the match text channel (the current channel)
+      if (match.matchChannel) {
+        deletePromises.push(match.matchChannel.delete().catch(err => {
+          console.log(`Could not delete match channel: ${err.message}`);
+        }));
+      }
+      
+      // Delete the category LAST (after all children are deleted)
+      if (match.matchCategory) {
+        deletePromises.push(match.matchCategory.delete().catch(err => {
+          console.log(`Could not delete match category: ${err.message}`);
+        }));
       }
 
-      // Delete match category and channels by name (more reliable)
-      if (match.matchId) {
-        const categoryName = `Match ${match.matchId}`;
-        deletePromises.push(safelyDeleteChannelByName(categoryName, 4)); // Category type
-        deletePromises.push(safelyDeleteChannelByName("match-lobby", 0)); // Text channel
-        deletePromises.push(safelyDeleteChannelByName("🔵 Team 1 (Blue)", 2)); // Voice channel
-        deletePromises.push(safelyDeleteChannelByName("🔴 Team 2 (Red)", 2)); // Voice channel
-      }
-
-      // Wait for all deletions to complete (but don't let errors stop us)
+      // Wait for all deletions to complete
       await Promise.allSettled(deletePromises);
 
       await message.channel.send("🛑 The current match has been canceled. Players have been cleared from the queue and match channels have been deleted.");
@@ -3084,6 +3916,139 @@ client.on("messageCreate", async (message) => {
       
       await message.channel.send("⚠️ Match canceled with some errors, but players have been cleared from the queue.");
     }
+  }
+
+  // ---------------- !duobreak ----------------
+  if (cmd === "!duobreak") {
+      const playerId = message.author.id;
+      const player = ensurePlayer(playerId);
+
+      if (!player.fun.duoPartner) {
+          return message.reply("❌ You are not in a duo partnership.");
+      }
+
+      const partnerId = player.fun.duoPartner;
+      const partner = ensurePlayer(partnerId);
+
+      // Remove from queue if either is queued
+      if (queue4fun.includes(playerId)) {
+          queue4fun = queue4fun.filter(id => id !== playerId);
+      }
+      if (queue4fun.includes(partnerId)) {
+          queue4fun = queue4fun.filter(id => id !== partnerId);
+      }
+
+      // Break the duo
+      player.fun.duoPartner = null;
+      partner.fun.duoPartner = null;
+      
+      saveData();
+      await update4funQueueMessage();
+
+      await message.reply(`✅ Duo partnership with <@${partnerId}> has been dissolved.`);
+  }
+
+  // ---------------- !duostatus ----------------
+  if (cmd === "!duostatus") {
+      const userMention = args[0] || message.author.id;
+      const userId = userMention.replace(/[<@!>]/g, "") || message.author.id;
+      
+      const player = ensurePlayer(userId);
+      const isSelf = userId === message.author.id;
+
+      if (!player.fun.duoPartner) {
+          const messageText = isSelf ? 
+              "You are not currently in a duo partnership. Click the '🤝 Request Duo' button in the 4fun queue to form one." :
+              `<@${userId}> is not in a duo partnership.`;
+          return message.reply(messageText);
+      }
+
+      const partner = ensurePlayer(player.fun.duoPartner);
+      const partnerInQueue = queue4fun.includes(player.fun.duoPartner);
+      const playerInQueue = queue4fun.includes(userId);
+
+      const embed = new EmbedBuilder()
+          .setTitle("🤝 Duo Status")
+          .setDescription(isSelf ? 
+              `You are duo partners with <@${player.fun.duoPartner}>` :
+              `<@${userId}> is duo partners with <@${player.fun.duoPartner}>`)
+          .addFields(
+              { name: "Duo Partner", value: `<@${player.fun.duoPartner}>`, inline: true },
+              { name: "Queue Status", value: playerInQueue && partnerInQueue ? "✅ Both in queue" : playerInQueue ? "🟡 You in queue" : partnerInQueue ? "🟡 Partner in queue" : "❌ Neither in queue", inline: true }
+          )
+          .setColor(0x0099FF)
+          .setTimestamp();
+
+      await message.channel.send({ embeds: [embed] });
+  }
+
+  // ---------------- !simulate4fun ----------------
+  if (cmd === "!simulate4fun") {
+      if (!message.member.permissions.has("ManageGuild")) {
+          return message.reply("❌ Only staff members can use this command.");
+      }
+
+      const count = parseInt(args[0] || "10");
+      
+      // Get registered players with summoner names (no role requirements for 4fun)
+      const eligiblePlayers = Object.keys(playerData).filter(id => {
+          // Filter out system keys
+          if (id.startsWith('_')) return false;
+          
+          const player = playerData[id];
+          
+          // Check for summoner name only (no role requirements for 4fun)
+          if (!player?.summonerName) return false;
+          
+          return true;
+      });
+
+      if (eligiblePlayers.length === 0) {
+          return message.reply("❌ No registered players found.");
+      }
+
+      // Clear current 4fun queue first
+      queue4fun = [];
+      
+      // Shuffle eligible players array to get random selection
+      const shuffledPlayers = [...eligiblePlayers].sort(() => Math.random() - 0.5);
+      
+      // Add random players to 4fun queue (up to the requested count)
+      const playersToAdd = Math.min(count, shuffledPlayers.length);
+      let addedCount = 0;
+
+      for (let i = 0; i < playersToAdd; i++) {
+          const playerId = shuffledPlayers[i];
+          
+          // Additional safety check
+          const player = playerData[playerId];
+          if (player.summonerName) {
+              if (!queue4fun.includes(playerId)) {
+                  queue4fun.push(playerId);
+                  addedCount++;
+              }
+          }
+      }
+
+      saveData();
+      
+      let response = `🎉 Randomly added ${addedCount} players to 4fun queue. 4Fun Queue = ${queue4fun.length}/${QUEUE4FUN_SIZE}`;
+
+      if (addedCount < count) {
+          response += `\nℹ️ Only ${eligiblePlayers.length} registered players available.`;
+      }
+
+      // Show which players were added
+      const addedPlayerMentions = queue4fun.map(id => `<@${id}>`).join(', ');
+      response += `\n\n**Players added:** ${addedPlayerMentions}`;
+      
+      message.channel.send(response);
+      await update4funQueueMessage();
+
+      // Start 4fun ready check if queue becomes full
+      if (queue4fun.length === QUEUE4FUN_SIZE && !active4funReadyCheck) {
+          await start4funReadyCheck(message.channel);
+      }
   }
 
   if (cmd === "!simulate") {
@@ -3961,40 +4926,6 @@ async function makeTeams(channel) {
   // ---------------- CREATE SEPARATE MATCH CATEGORY FOR EACH MATCH ----------------
   const guild = channel.guild;
   
-  // Add a lock for match ID generation
-  let matchIdLock = false;
-
-  async function getNextMatchId() {
-    // Wait for lock if another match is being created
-    while (matchIdLock) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    
-    try {
-      matchIdLock = true;
-      
-      const matchHistory = await loadMatchHistory();
-      
-      // If no matches exist, start from 1
-      if (matchHistory.length === 0) {
-        return "1";
-      }
-      
-      // Find the highest existing match ID and increment
-      const maxId = Math.max(...matchHistory.map(match => {
-        // Handle both string and number IDs
-        const id = match.id;
-        return typeof id === 'string' ? parseInt(id) || 0 : id;
-      }).filter(id => !isNaN(id)));
-      
-      return (maxId + 1).toString();
-      
-    } finally {
-      // Always release the lock
-      matchIdLock = false;
-    }
-  }
-
   const matchId = await getNextMatchId();
   const matchCategoryName = `Match ${matchId}`; // Simpler name without timestamp
   
@@ -4018,20 +4949,18 @@ async function makeTeams(channel) {
     permissionOverwrites: [
       {
         id: guild.id, // @everyone
-        deny: ['ViewChannel'] // CHANGE: Deny view for everyone
+        allow: ['ViewChannel']
       },
       // Allow match participants to view and send messages
       ...bestTeam1.map(playerId => ({
         id: playerId,
         type: 1,
-        allow: [/*'ViewChannel',*/ 'SendMessages', 'ReadMessageHistory'],
-        deny: ['ViewChannel']
+        allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
       })),
       ...bestTeam2.map(playerId => ({
         id: playerId,
         type: 1,
-        allow: [/*'ViewChannel'*/, 'SendMessages', 'ReadMessageHistory'],
-        deny: ['ViewChannel']
+        allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
       }))
     ]
   });
@@ -4297,6 +5226,298 @@ async function makeTeams(channel) {
   queue = [];
   saveData();
   updateQueueMessage();
+}
+
+async function make4funTeams(channel) {
+  trackRequest();
+  
+  const players = [...queue4fun];
+  
+  // Initialize hidden MMR for new players based on their main rank
+  players.forEach(playerId => {
+    const player = ensurePlayer(playerId);
+    if (player.fun.hiddenMMR === 0 && player.summonerName) {
+      // Set initial hidden MMR based on main rank IHP
+      player.fun.hiddenMMR = getIHP(player);
+    }
+  });
+
+  let bestTeam1 = null;
+  let bestTeam2 = null;
+  let bestDiff = Infinity;
+  let bestAvg1 = 0;
+  let bestAvg2 = 0;
+
+  function generateCombinations(arr, k) {
+    const result = [];
+    
+    function backtrack(start, current) {
+      if (current.length === k) {
+        result.push([...current]);
+        return;
+      }
+      
+      for (let i = start; i < arr.length; i++) {
+        current.push(arr[i]);
+        backtrack(i + 1, current);
+        current.pop();
+      }
+    }
+    
+    backtrack(0, []);
+    return result;
+  }
+
+  console.log(`🔍 Starting 4fun team combination search for ${players.length} players`);
+  const allTeam1Combinations = generateCombinations(players, 5);
+  
+  console.log(`📊 Evaluating ${allTeam1Combinations.length} possible 4fun team combinations`);
+  
+  for (const team1 of allTeam1Combinations) {
+    const team2 = players.filter(player => !team1.includes(player));
+    
+    // Calculate average hidden MMR for both teams
+    const sum1 = team1.reduce((sum, id) => sum + ensurePlayer(id).fun.hiddenMMR, 0);
+    const sum2 = team2.reduce((sum, id) => sum + ensurePlayer(id).fun.hiddenMMR, 0);
+    const avg1 = sum1 / 5;
+    const avg2 = sum2 / 5;
+    const diff = Math.abs(avg1 - avg2);
+    
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestTeam1 = team1;
+      bestTeam2 = team2;
+      bestAvg1 = avg1;
+      bestAvg2 = avg2;
+    }
+    
+    if (bestDiff === 0) break;
+  }
+
+  console.log(`✅ Best 4fun team combination found with MMR difference: ${bestDiff.toFixed(2)}`);
+  console.log(`🔵 Team 1 Avg MMR: ${bestAvg1.toFixed(2)}, 🔴 Team 2 Avg MMR: ${bestAvg2.toFixed(2)}`);
+
+  const guild = channel.guild;
+  const matchId = await getNextMatchId();
+  const matchCategoryName = `4Fun Match ${matchId}`;
+
+  const matchCategory = await guild.channels.create({ 
+    name: matchCategoryName, 
+    type: 4,
+    permissionOverwrites: [
+      {
+        id: guild.id,
+        allow: ['ViewChannel']
+      }
+    ]
+  });
+
+  const matchChannel = await guild.channels.create({ 
+    name: "4fun-match-lobby", 
+    type: 0, 
+    parent: matchCategory.id,
+    permissionOverwrites: [
+      {
+        id: guild.id,
+      },
+      ...bestTeam1.map(playerId => ({
+        id: playerId,
+        type: 1,
+        allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
+      })),
+      ...bestTeam2.map(playerId => ({
+        id: playerId,
+        type: 1,
+        allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
+      }))
+    ]
+  });
+
+  const team1VC = await guild.channels.create({ 
+    name: "🔵 Team 1 (Blue)", 
+    type: 2, 
+    parent: matchCategory.id,
+    permissionOverwrites: [
+      {
+        id: guild.id,
+        allow: ['ViewChannel', 'Connect'],
+        deny: ['Speak'],
+      },
+      ...bestTeam1.map(playerId => ({
+        id: playerId,
+        type: 1,
+        allow: ['ViewChannel', 'Connect', 'Speak']
+      }))
+    ]
+  });
+
+  const team2VC = await guild.channels.create({ 
+    name: "🔴 Team 2 (Red)", 
+    type: 2, 
+    parent: matchCategory.id,
+    permissionOverwrites: [
+      {
+        id: guild.id,
+        allow: ['ViewChannel', 'Connect'],
+        deny: ['Speak'],
+      },
+      ...bestTeam2.map(playerId => ({
+        id: playerId,
+        type: 1,
+        allow: ['ViewChannel', 'Connect', 'Speak']
+      }))
+    ]
+  });
+
+  const buildMulti = (team) => {
+    const summoners = team
+      .map((id) => playerData[id]?.summonerName)
+      .filter(Boolean)
+      .map((url) => {
+        try {
+          const parts = url.split("/");
+          const namePart = decodeURIComponent(parts[parts.length - 1]);
+          return namePart.replace("-", "%23").replace(/\s+/g, "+");
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+    if (summoners.length === 0) return "https://www.op.gg/";
+    return `https://www.op.gg/lol/multisearch/na?summoners=${summoners.join("%2C")}`;
+  };
+
+  const team1Link = buildMulti(bestTeam1);
+  const team2Link = buildMulti(bestTeam2);
+
+  // Format team display with normal ranks instead of 4fun points
+  function formatTeamDisplay(team) {
+    return team
+      .map((id) => {
+        const player = playerData[id];
+        const rankDisplay = formatRankDisplay(player.rank, player.division, player.lp);
+        const funPoints = player.fun.points;
+        return `<@${id}> / ${rankDisplay} (${funPoints} 4fun pts)`;
+      })
+      .join("\n");
+  }
+
+  let draftSuccess = false;
+  let draftLinks = {
+    blue: "https://draftlol.dawe.gg",
+    red: "https://draftlol.dawe.gg", 
+    spectator: "https://draftlol.dawe.gg",
+    lobby: "https://draftlol.dawe.gg"
+  };
+
+  try {
+    console.log("🔄 Starting 4fun draft lobby creation...");
+    draftLinks = await createDraftLolLobby();
+    draftSuccess = true;
+    console.log(`✅ 4fun Draft links generated successfully`);
+  } catch (err) {
+    console.error("❌ Critical error creating 4fun draft lobby:", err);
+    draftSuccess = false;
+  }
+
+  const components = [];
+
+  if (draftSuccess) {
+    const team1Sorted = [...bestTeam1].sort((a,b) => playerData[b].fun.hiddenMMR - playerData[a].fun.hiddenMMR);
+    const team2Sorted = [...bestTeam2].sort((a,b) => playerData[b].fun.hiddenMMR - playerData[a].fun.hiddenMMR);
+
+    const blueDraftButton = new ButtonBuilder()
+      .setLabel('🟦 Blue Team Draft')
+      .setStyle(ButtonStyle.Link)
+      .setURL(draftLinks.blue);
+
+    const redDraftButton = new ButtonBuilder()
+      .setLabel('🔴 Red Team Draft')
+      .setStyle(ButtonStyle.Link)
+      .setURL(draftLinks.red);
+
+    const spectatorButton = new ButtonBuilder()
+      .setLabel('👁️ Spectator View')
+      .setStyle(ButtonStyle.Link)
+      .setURL(draftLinks.spectator);
+
+    const teamRow = new ActionRowBuilder().addComponents(
+      blueDraftButton,
+      redDraftButton,
+      spectatorButton
+    );
+
+    components.push(teamRow);
+  }
+
+  const managementRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`report_4fun_win_1`)
+      .setLabel('🏆 Team 1 Won')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`report_4fun_win_2`)
+      .setLabel('🏆 Team 2 Won')
+      .setStyle(ButtonStyle.Success)
+  );
+
+  components.push(managementRow);
+
+  let embedDescription = `**4Fun Match**\n\n` +
+    `**Team OP.GG Links:**\n` +
+    `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
+    `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
+    `**After match, vote with Team Won buttons - 6/10 votes needed**`;
+
+  const matchEmbed = new EmbedBuilder()
+    .setTitle("🎉 4Fun Match Lobby")
+    .setDescription(embedDescription)
+    .addFields(
+      {
+        name: `🔵 Team 1 (Avg MMR: ${Math.round(bestAvg1)})`,
+        value: formatTeamDisplay(bestTeam1),
+        inline: false,
+      },
+      {
+        name: `🔴 Team 2 (Avg MMR: ${Math.round(bestAvg2)})`,
+        value: formatTeamDisplay(bestTeam2),
+        inline: false,
+      }
+    )
+    .setColor(0xff00ff);
+
+  const messageOptions = {
+    embeds: [matchEmbed],
+    components: components
+  };
+
+  if (!draftSuccess) {
+    messageOptions.content = `❌ Failed to create draft lobby. Players will need to make draft manually.`;
+  }
+
+  const matchData = {
+    team1: bestTeam1,
+    team2: bestTeam2,
+    matchChannel,
+    matchCategory,
+    team1VC,
+    team2VC,
+    matchId: matchId,
+    matchMessageId: null,
+    votes: {
+      team1: new Set(),
+      team2: new Set()
+    }
+  };
+
+  const matchMessage = await matchChannel.send(messageOptions);
+  matchData.matchMessageId = matchMessage.id;
+
+  matches4fun.set(matchChannel.id, matchData);
+
+  queue4fun = [];
+  saveData();
+  update4funQueueMessage();
 }
 
 // ---------------- END MATCH ----------------
@@ -4651,6 +5872,73 @@ async function endMatch(channel, winner, isVoided = false) {
   await updateLeaderboardChannel(guild);
 }
 
+async function end4funMatch(channel, winner) {
+  const match = matches4fun.get(channel.id);
+  if (!match) {
+    return channel.send("❌ No active 4fun match found in this channel.");
+  }
+
+  const { team1, team2, matchChannel, matchCategory, team1VC, team2VC, matchId } = match;
+  const guild = channel.guild;
+
+  const winners = winner === "1" ? team1 : team2;
+  const losers = winner === "1" ? team2 : team1;
+
+  // Calculate team average MMR for Elo calculation
+  const winnersAvgMMR = winners.reduce((sum, id) => sum + ensurePlayer(id).fun.hiddenMMR, 0) / winners.length;
+  const losersAvgMMR = losers.reduce((sum, id) => sum + ensurePlayer(id).fun.hiddenMMR, 0) / losers.length;
+
+  // Update hidden MMR using same Elo system as main game
+  winners.forEach((id) => {
+    const p = ensurePlayer(id);
+    const oldMMR = p.fun.hiddenMMR;
+    
+    // Elo calculation
+    const expected = 1 / (1 + 10 ** ((losersAvgMMR - oldMMR) / 400));
+    const newMMR = oldMMR + 32 * (1 - expected);
+    
+    p.fun.hiddenMMR = newMMR;
+    p.fun.points = Math.max(0, p.fun.points + FUN_POINTS_PER_GAME); // Can't go below 0
+    p.fun.wins++;
+    p.fun.matchesPlayed++;
+  });
+
+  losers.forEach((id) => {
+    const p = ensurePlayer(id);
+    const oldMMR = p.fun.hiddenMMR;
+    
+    // Elo calculation
+    const expected = 1 / (1 + 10 ** ((winnersAvgMMR - oldMMR) / 400));
+    const newMMR = oldMMR + 32 * (0 - expected);
+    
+    p.fun.hiddenMMR = newMMR;
+    p.fun.points = Math.max(0, p.fun.points - FUN_POINTS_PER_GAME); // Can't go below 0
+    p.fun.losses++;
+    p.fun.matchesPlayed++;
+  });
+
+  saveData();
+
+  // Send confirmation message
+  await channel.send(`✅ 4Fun Match ${matchId} ended! ${winner === "1" ? "🟦 Team 1 (Blue)" : "🔴 Team 2 (Red)"} wins!`);
+
+  // Delete match channels
+  try {
+    if (team1VC) await team1VC.delete().catch(console.error);
+    if (team2VC) await team2VC.delete().catch(console.error);
+    if (matchChannel) await matchChannel.delete().catch(console.error);
+    if (matchCategory) await matchCategory.delete().catch(console.error);
+  } catch (err) {
+    console.error("Error deleting 4fun match channels:", err);
+  }
+
+  // Remove from active matches
+  matches4fun.delete(channel.id);
+  
+  // Update 4fun leaderboard
+  await update4funLeaderboardChannel(guild);
+}
+
 // ---------------- READY ----------------
 const MAIN_GUILD_ID = "1423242905602101310";
 
@@ -4686,9 +5974,21 @@ client.once("ready", async () => {
   if (!queueChannel) {
     queueChannel = await guild.channels.create({ name: "queue", type: 0 });
   }
+
+  // 4fun queue setup
+  let queue4funChannel = guild.channels.cache.find((c) => c.name === "4fun-queue");
+  if (!queue4funChannel) {
+    queue4funChannel = await guild.channels.create({ name: "4fun-queue", type: 0 });
+  }
+
+  await post4funQueueMessage(queue4funChannel);
   await postQueueMessage(queueChannel);
+
+  // 4fun leaderboard setup
+  await update4funLeaderboardChannel(guild);
   
   console.log('✅ Bot fully initialized with data loaded');
+  console.log('✅ Bot fully initialized with 4fun system');
 });
 
 // ---------------- WEB SERVER FOR RENDER ----------------
