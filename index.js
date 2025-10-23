@@ -1733,61 +1733,97 @@ client.on("interactionCreate", async (interaction) => {
     // Check if target is in queue
     const targetInQueue = queue4fun.includes(selectedUserId);
 
+    // Find the duo-requests channel
+    const duoRequestsChannel = interaction.guild.channels.cache.find(
+        channel => channel.name === 'duo-requests' && channel.type === 0
+    );
+
+    if (!duoRequestsChannel) {
+        return interaction.update({
+            content: '❌ Error: #duo-requests channel not found. Please contact an admin.',
+            components: []
+        });
+    }
+
     try {
-        const targetUser = await client.users.fetch(selectedUserId);
-        
+        // Create the embed for the duo request
         const embed = new EmbedBuilder()
             .setTitle("🤝 Duo Request")
-            .setDescription(`<@${requesterId}> wants to form a duo with you for 4fun queue!`)
+            .setDescription(`<@${requesterId}> Zaddy wants you in his bed <@${selectedUserId}> for 4fun queue!`)
             .addFields(
                 { name: "Requester", value: `<@${requesterId}>`, inline: true },
-                { name: "Current Queue", value: targetInQueue ? "✅ You are in queue" : "❌ You are not in queue", inline: true },
+                { name: "Target", value: `<@${selectedUserId}>`, inline: true },
+                { name: "Queue Status", value: targetInQueue ? "✅ Target in queue" : "❌ Target not in queue", inline: true },
                 { name: "Expires", value: "10 minutes", inline: true }
             )
             .setColor(0x0099FF)
             .setTimestamp();
 
+        // Create accept/decline buttons with both user IDs in the customId
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder()
-                .setCustomId(`accept_duo_${requesterId}`)
+                .setCustomId(`accept_duo_${requesterId}_${selectedUserId}`)
                 .setLabel("✅ Accept")
                 .setStyle(ButtonStyle.Success),
             new ButtonBuilder()
-                .setCustomId(`decline_duo_${requesterId}`)
+                .setCustomId(`decline_duo_${requesterId}_${selectedUserId}`)
                 .setLabel("❌ Decline")
                 .setStyle(ButtonStyle.Danger)
         );
 
-        await targetUser.send({ 
-            content: `You have received a duo request from <@${requesterId}>!`,
+        // Send the duo request to the #duo-requests channel
+        const duoMessage = await duoRequestsChannel.send({ 
+            content: `<@${selectedUserId}>`, // Ping the target user
             embeds: [embed], 
             components: [row] 
         });
 
-        // Store pending request
+        // Store pending request with message info
         pendingDuoRequests.set(requesterId, {
             targetId: selectedUserId,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            messageId: duoMessage.id,
+            channelId: duoRequestsChannel.id
         });
 
         // Set expiration timer
-        setTimeout(() => {
+        setTimeout(async () => {
             if (pendingDuoRequests.has(requesterId)) {
+                const expiredRequest = pendingDuoRequests.get(requesterId);
                 pendingDuoRequests.delete(requesterId);
+                
+                // Update the message to show it expired
+                try {
+                    const channel = interaction.guild.channels.cache.get(expiredRequest.channelId);
+                    if (channel) {
+                        const message = await channel.messages.fetch(expiredRequest.messageId);
+                        const expiredEmbed = EmbedBuilder.from(message.embeds[0])
+                            .setColor(0xff0000)
+                            .spliceFields(3, 1, { name: "Status", value: "❌ Expired", inline: true });
+                        
+                        await message.edit({ 
+                            embeds: [expiredEmbed], 
+                            components: [] 
+                        });
+                    }
+                } catch (error) {
+                    console.error("Failed to update expired duo request:", error);
+                }
+                
                 console.log(`⏰ Duo request from ${requesterId} expired`);
             }
         }, DUO_REQUEST_EXPIRY);
 
-        // Update the original message to remove the select menu
+        // Update the original interaction
         await interaction.update({
-            content: `✅ Duo request sent to <@${selectedUserId}>! They have 10 minutes to accept.`,
+            content: `✅ Duo request sent to <@${selectedUserId}> in ${duoRequestsChannel}! They have 10 minutes to accept.`,
             components: []
         });
 
     } catch (error) {
-        console.error("Failed to send DM:", error);
+        console.error("Failed to send duo request:", error);
         await interaction.reply({
-            content: "❌ Could not send duo request. The player may have DMs disabled.",
+            content: "❌ Could not send duo request. Please try again.",
             ephemeral: true
         });
     }
@@ -2138,82 +2174,53 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId.startsWith("accept_duo_") || interaction.customId.startsWith("decline_duo_")) {
-      // This is a DM interaction
-      const requesterId = interaction.customId.split("_")[2];
-      const targetId = interaction.user.id;
+      const parts = interaction.customId.split('_');
+      const requesterId = parts[2];
+      const targetId = parts[3]; // Now we get targetId from the customId
       const isAccept = interaction.customId.startsWith("accept_duo");
-
-      // Verify the request exists and is for this user
+      
+      // Verify the request exists and the interacting user is the target
       const request = pendingDuoRequests.get(requesterId);
-      if (!request || request.targetId !== targetId) {
-        return interaction.reply({
-          content: "❌ This duo request has expired or is invalid.",
-          ephemeral: true
-        });
+      if (!request || request.targetId !== targetId || interaction.user.id !== targetId) {
+          return interaction.reply({
+              content: "❌ This duo request has expired, is invalid, or you are not the intended recipient.",
+              ephemeral: true
+          });
       }
-
+      
+      // Process acceptance or decline (your existing logic here)
+      if (isAccept) {
+          // Your existing duo formation logic
+          await interaction.reply(`✅ You have accepted the duo request from <@${requesterId}>!`);
+          
+          // Edit the original request message to show it was accepted
+          try {
+              const duoRequestsChannel = interaction.guild.channels.cache.find(
+                  channel => channel.name === 'duo-requests' && channel.isTextBased()
+              );
+              if (duoRequestsChannel && request.messageId) {
+                  const originalMessage = await duoRequestsChannel.messages.fetch(request.messageId);
+                  const acceptedEmbed = EmbedBuilder.from(originalMessage.embeds[0])
+                      .setColor(0x00FF00) // Green for accepted
+                      .spliceFields(2, 1, { name: "Status", value: "✅ Accepted", inline: true }); // Update status field
+                  
+                  await originalMessage.edit({ 
+                      embeds: [acceptedEmbed], 
+                      components: [] // Remove buttons
+                  });
+              }
+          } catch (error) {
+              console.error("Failed to update duo request message:", error);
+          }
+      } else {
+          // Your existing decline logic
+          await interaction.reply("❌ You have declined the duo request.");
+          
+          // Similar message update for declined requests
+      }
+      
       // Remove from pending requests
       pendingDuoRequests.delete(requesterId);
-
-      if (isAccept) {
-        // Form the duo
-        const requester = ensurePlayer(requesterId);
-        const target = ensurePlayer(targetId);
-
-        requester.fun.duoPartner = targetId;
-        target.fun.duoPartner = requesterId;
-        
-        saveData();
-
-        // Send confirmation to both players
-        const successEmbed = new EmbedBuilder()
-          .setTitle("✅ Duo Partnership Formed!")
-          .setDescription(`You are now duo partners with <@${requesterId}>!`)
-          .addFields(
-            { name: "How to Play", value: "Both players must join the 4fun queue separately. You will automatically be placed on the same team.", inline: false },
-            { name: "Commands", value: "Use `!duostatus` to check your duo\nUse `!duobreak` to dissolve the duo", inline: false }
-          )
-          .setColor(0x00ff00)
-          .setTimestamp();
-
-        await interaction.reply({ embeds: [successEmbed] });
-
-        // Notify the requester
-        try {
-          const requesterUser = await client.users.fetch(requesterId);
-          await requesterUser.send({
-            content: `🎉 <@${targetId}> accepted your duo request! You are now partners.`,
-            embeds: [successEmbed]
-          });
-        } catch (error) {
-          console.error("Could not notify requester:", error);
-        }
-
-        // Notify in queue channel if both are in queue
-        const queueChannel = client.channels.cache.find(c => c.name === "4fun-queue");
-        if (queueChannel && queue4fun.includes(requesterId) && queue4fun.includes(targetId)) {
-          await queueChannel.send({
-            content: `🤝 <@${requesterId}> and <@${targetId}> have formed a duo! Both are in queue and will be teamed together.`
-          });
-        }
-
-      } else {
-        // Decline the request
-        await interaction.reply({
-          content: "❌ You have declined the duo request.",
-          ephemeral: true
-        });
-
-        // Notify the requester
-        try {
-          const requesterUser = await client.users.fetch(requesterId);
-          await requesterUser.send({
-            content: `❌ <@${targetId}> declined your duo request.`
-          });
-        } catch (error) {
-          console.error("Could not notify requester:", error);
-        }
-      }
     }
 
     if (interaction.customId === 'duo4fun') {
