@@ -2002,6 +2002,111 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
+    // --- Draft Link Buttons ---
+    if (interaction.customId === 'blue_draft' || interaction.customId === 'red_draft' || interaction.customId === 'spectator_draft') {
+      // Find the match for this channel
+      const match = matches.get(interaction.channelId);
+      if (!match || !match.drafters) {
+        return interaction.reply({
+          content: "❌ No active match found or draft links not available.",
+          ephemeral: true
+        });
+      }
+
+      const userId = interaction.user.id;
+      let link = '';
+      let message = '';
+
+      if (interaction.customId === 'blue_draft') {
+        if (userId !== match.drafters.blue) {
+          return interaction.reply({
+            content: `❌ Only the assigned blue team drafter (<@${match.drafters.blue}>) can access this draft link.`,
+            ephemeral: true
+          });
+        }
+        link = match.blue;
+        message = '🔵 **Blue Team Draft Link**';
+      } 
+      else if (interaction.customId === 'red_draft') {
+        if (userId !== match.drafters.red) {
+          return interaction.reply({
+            content: `❌ Only the assigned red team drafter (<@${match.drafters.red}>) can access this draft link.`,
+            ephemeral: true
+          });
+        }
+        link = match.red;
+        message = '🔴 **Red Team Draft Link**';
+      }
+      else if (interaction.customId === 'spectator_draft') {
+        // Spectator link is available to all match participants
+        const isInMatch = match.team1.includes(userId) || match.team2.includes(userId);
+        if (!isInMatch) {
+          return interaction.reply({
+            content: "❌ Only match participants can access the spectator link.",
+            ephemeral: true
+          });
+        }
+        link = match.spectator;
+        message = '👁️ **Spectator Link**';
+      }
+
+      await interaction.reply({
+        content: `${message}\n${link}\n\n*This link will expire when the draft is completed*`,
+        ephemeral: true
+      });
+    }
+
+    if (interaction.customId === 'blue_draft_4fun' || interaction.customId === 'red_draft_4fun' || interaction.customId === 'spectator_draft_4fun') {
+      const match = matches4fun.get(interaction.channelId);
+      if (!match || !match.drafters) {
+        return interaction.reply({
+          content: "❌ No active 4fun match found or draft links not available.",
+          ephemeral: true
+        });
+      }
+
+      const userId = interaction.user.id;
+      let link = '';
+      let message = '';
+
+      if (interaction.customId === 'blue_draft_4fun') {
+        if (userId !== match.drafters.blue) {
+          return interaction.reply({
+            content: `❌ Only the assigned blue team drafter (<@${match.drafters.blue}>) can access this draft link.`,
+            ephemeral: true
+          });
+        }
+        link = match.blue;
+        message = '🔵 **Blue Team Draft Link**';
+      } 
+      else if (interaction.customId === 'red_draft_4fun') {
+        if (userId !== match.drafters.red) {
+          return interaction.reply({
+            content: `❌ Only the assigned red team drafter (<@${match.drafters.red}>) can access this draft link.`,
+            ephemeral: true
+          });
+        }
+        link = match.red;
+        message = '🔴 **Red Team Draft Link**';
+      }
+      else if (interaction.customId === 'spectator_draft_4fun') {
+        const isInMatch = match.team1.includes(userId) || match.team2.includes(userId);
+        if (!isInMatch) {
+          return interaction.reply({
+            content: "❌ Only 4fun match participants can access the spectator link.",
+            ephemeral: true
+          });
+        }
+        link = match.spectator;
+        message = '👁️ **Spectator Link**';
+      }
+
+      await interaction.reply({
+        content: `${message}\n${link}\n\n*This link will expire when the draft is completed*`,
+        ephemeral: true
+      });
+    }
+
     // --- Report Win Buttons ---
     if (interaction.customId === 'open_role_selection') {
         try {
@@ -5274,32 +5379,27 @@ async function makeTeams(channel) {
     const team1HighestElo = team1Sorted[0];
     const team2HighestElo = team2Sorted[0];
     
-    const team1HighestPlayer = playerData[team1HighestElo];
-    const team2HighestPlayer = playerData[team2HighestElo];
-    
-    const team1HighestDisplay = team1HighestPlayer ? 
-      `${team1HighestPlayer.rank} ${team1HighestPlayer.division || ''} ${team1HighestPlayer.lp}LP` : 
-      "Unknown";
-    const team2HighestDisplay = team2HighestPlayer ? 
-      `${team2HighestPlayer.rank} ${team2HighestPlayer.division || ''} ${team2HighestPlayer.lp}LP` : 
-      "Unknown";
+    // Store drafters in match data
+    matchData.drafters = {
+      blue: team1HighestElo,
+      red: team2HighestElo
+    };
 
-    // Blue team draft button - only for highest Elo blue player
+    // Change from Link buttons to regular buttons with custom IDs
     const blueDraftButton = new ButtonBuilder()
+      .setCustomId('blue_draft')
       .setLabel('🟦 Blue Team Draft')
-      .setStyle(ButtonStyle.Link)
-      .setURL(draftLinks.blue);
+      .setStyle(ButtonStyle.Primary);
 
-    // Red team draft button - only for highest Elo red player  
     const redDraftButton = new ButtonBuilder()
+      .setCustomId('red_draft')  
       .setLabel('🔴 Red Team Draft')
-      .setStyle(ButtonStyle.Link)
-      .setURL(draftLinks.red);
+      .setStyle(ButtonStyle.Danger);
 
     const spectatorButton = new ButtonBuilder()
+      .setCustomId('spectator_draft')
       .setLabel('👁️ Spectator View')
-      .setStyle(ButtonStyle.Link)
-      .setURL(draftLinks.spectator);
+      .setStyle(ButtonStyle.Secondary);
 
     const teamRow = new ActionRowBuilder().addComponents(
       blueDraftButton,
@@ -5308,6 +5408,16 @@ async function makeTeams(channel) {
     );
 
     components.push(teamRow);
+    
+    // Update embed description to show assigned drafters
+    embedDescription = `**Assigned Drafters:**\n` +
+      `🔵 Blue Team: <@${team1HighestElo}> (Highest Elo)\n` +
+      `🔴 Red Team: <@${team2HighestElo}> (Highest Elo)\n\n` +
+      `**Team OP.GG Links:**\n` +
+      `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
+      `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
+      `**Click your team's draft button above - Only assigned drafters can access links**\n\n` +
+      `**After match, vote with Team Won buttons - 6/10 votes needed**`;
   }
 
   const managementRow = new ActionRowBuilder().addComponents(
@@ -5622,20 +5732,26 @@ async function make4funTeams(channel) {
     const team1Sorted = [...bestTeam1].sort((a,b) => playerData[b].fun.hiddenMMR - playerData[a].fun.hiddenMMR);
     const team2Sorted = [...bestTeam2].sort((a,b) => playerData[b].fun.hiddenMMR - playerData[a].fun.hiddenMMR);
 
+    // Store drafters in match data
+    matchData.drafters = {
+      blue: team1Sorted[0],
+      red: team2Sorted[0]
+    };
+
     const blueDraftButton = new ButtonBuilder()
+      .setCustomId('blue_draft_4fun')
       .setLabel('🟦 Blue Team Draft')
-      .setStyle(ButtonStyle.Link)
-      .setURL(draftLinks.blue);
+      .setStyle(ButtonStyle.Primary);
 
     const redDraftButton = new ButtonBuilder()
+      .setCustomId('red_draft_4fun')
       .setLabel('🔴 Red Team Draft')
-      .setStyle(ButtonStyle.Link)
-      .setURL(draftLinks.red);
+      .setStyle(ButtonStyle.Danger);
 
     const spectatorButton = new ButtonBuilder()
+      .setCustomId('spectator_draft_4fun')
       .setLabel('👁️ Spectator View')
-      .setStyle(ButtonStyle.Link)
-      .setURL(draftLinks.spectator);
+      .setStyle(ButtonStyle.Secondary);
 
     const teamRow = new ActionRowBuilder().addComponents(
       blueDraftButton,
