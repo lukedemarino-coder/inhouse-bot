@@ -15,10 +15,8 @@ const {
   EmbedBuilder,
   StringSelectMenuBuilder, 
   StringSelectMenuOptionBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  UserSelectMenuBuilder
+  UserSelectMenuBuilder,
+  PermissionsBitField
 } = require("discord.js");
 
 const client = new Client({
@@ -57,7 +55,7 @@ const QUEUE_SIZE = 10;
 const MATCH_HISTORY_FILE = "matchHistory.json";
 const QUEUE4FUN_SIZE = 10;
 const FUN_POINTS_PER_GAME = 50;
-const DUO_REQUEST_EXPIRY = 10 * 60 * 1000; // Duo request expiration time (10 minutes)
+const DUO_REQUEST_EXPIRY = 5 * 60 * 1000; // Duo request expiration time (10 minutes)
 
 let queue = [];
 let queue4fun = [];
@@ -74,6 +72,8 @@ let bannedUsers = new Set();
 let requestCount = 0;
 let saveDataTimeout = null;
 let pendingDuoRequests = new Map(); // key: requesterId, value: { targetId, timestamp }
+let voteMessageTimers = new Map(); // key: channelId, value: timer
+let voteMessageFloodCheck = new Map(); // key: channelId, value: { lastMessageCount: number, lastCheck: number }
 
 // Add block system
 let userBlocks = new Map(); // userId -> Set of blocked user IDs
@@ -492,23 +492,148 @@ const ROLES = [
 ];
 
 // ---------------- HELPER FUNCTIONS ----------------
-// Add this helper function to clear a user from all matches
-function clearUserFromAllMatches(userId) {
-  let cleared = false;
+// Manages the vote status message
+async function updateOrCreateVoteMessage(channel, match, is4fun = false) {
+  const team1Votes = match.votes.team1.size;
+  const team2Votes = match.votes.team2.size;
+  const totalVotes = team1Votes + team2Votes;
   
-  for (const [channelId, match] of matches.entries()) {
-    const wasInTeam1 = match.team1.includes(userId);
-    const wasInTeam2 = match.team2.includes(userId);
-    
-    if (wasInTeam1 || wasInTeam2) {
-      match.team1 = match.team1.filter(id => id !== userId);
-      match.team2 = match.team2.filter(id => id !== userId);
-      cleared = true;
-      console.log(`🔄 Cleared user ${userId} from match in channel ${channelId}`);
+  const voteMessageContent = `🗳️ **${is4fun ? '4Fun Match' : 'Match'} Voting**\n\n` +
+    `**Current Vote Count:**\n` +
+    `🔵 Team 1: ${team1Votes} votes\n` +
+    `🔴 Team 2: ${team2Votes} votes\n` +
+    `📊 Total: ${totalVotes}/10 players\n\n` +
+    `*6 votes for one team ends the match*`;
+
+  const voteButtonsRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`report_${is4fun ? '4fun_' : ''}win_1`)
+      .setLabel('🏆 Team 1 Won')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`report_${is4fun ? '4fun_' : ''}win_2`)
+      .setLabel('🏆 Team 2 Won')
+      .setStyle(ButtonStyle.Success)
+  );
+
+  // Try to update existing vote message first
+  if (match.voteMessageId) {
+    try {
+      const existingMessage = await channel.messages.fetch(match.voteMessageId);
+      await existingMessage.edit({
+        content: voteMessageContent,
+        components: [voteButtonsRow]
+      });
+      console.log(`✅ Updated existing vote message ${match.voteMessageId}`);
+      return; // Successfully updated
+    } catch (error) {
+      // Message was deleted or not found
+      console.log('❌ Vote message not found, creating new one');
+      match.voteMessageId = null;
     }
   }
+
+  // ALWAYS create a new vote message when flood is detected or initial timer expires
+  console.log(`🆕 Creating new vote message in channel ${channel.id}`);
+  const newVoteMessage = await channel.send({
+    content: voteMessageContent,
+    components: [voteButtonsRow]
+  });
+  match.voteMessageId = newVoteMessage.id;
+  console.log(`✅ Created new vote message with ID: ${newVoteMessage.id}`);
+}
+
+// Add this new function to handle the initial 20-minute delay and flood monitoring
+async function startVoteMessageFloodMonitoring(channel, match, is4fun = false) {
+  const channelId = channel.id;
   
-  return cleared;
+  // Clear any existing timer for this channel
+  if (voteMessageTimers.has(channelId)) {
+    clearTimeout(voteMessageTimers.get(channelId));
+  }
+  
+  console.log(`⏰ Starting 20-minute timer for vote message in channel ${channelId}`);
+  
+  // Set initial 20-minute timer
+  const initialTimer = setTimeout(async () => {
+    console.log(`⏰ 20 minutes passed, sending initial vote message for channel ${channelId}`);
+    
+    // Check if match still exists
+    const matchMap = is4fun ? matches4fun : matches;
+    if (!matchMap.has(channelId)) {
+      console.log(`❌ Match ended before 20-minute timer, cancelling vote message`);
+      return;
+    }
+    
+    await updateOrCreateVoteMessage(channel, match, is4fun);
+    
+    // Start periodic flood checks after initial message
+    startPeriodicFloodCheck(channel, match, is4fun);
+  }, 20 * 60 * 1000); // 20 minutes
+  
+  voteMessageTimers.set(channelId, initialTimer);
+}
+
+// Periodically check for flood conditions
+async function startPeriodicFloodCheck(channel, match, is4fun = false) {
+  const channelId = channel.id;
+  
+  const checkFlood = async () => {
+    // Check if match still exists
+    const matchMap = is4fun ? matches4fun : matches;
+    if (!matchMap.has(channelId)) {
+      console.log(`❌ Match no longer exists in channel ${channelId}, stopping flood check`);
+      return;
+    }
+    
+    if (!match.voteMessageId) {
+      console.log(`⚠️ No vote message ID for channel ${channelId}, creating one`);
+      await updateOrCreateVoteMessage(channel, match, is4fun);
+    } else {
+      try {
+        // Fetch recent messages to check if vote buttons are visible
+        const messages = await channel.messages.fetch({ limit: 50 });
+        const messageArray = Array.from(messages.values());
+        
+        // Find the vote message in the recent messages
+        const voteMessageIndex = messageArray.findIndex(msg => msg.id === match.voteMessageId);
+        
+        // If vote message is not in the last 20 messages, it's considered "flooded"
+        const floodThreshold = 20;
+        const isFlooded = voteMessageIndex === -1 || voteMessageIndex >= floodThreshold;
+        
+        if (isFlooded) {
+          console.log(`🌊 Chat flooded in channel ${channelId}, vote message index: ${voteMessageIndex}, resending vote message`);
+          // Force create a new message by nullifying the old ID
+          match.voteMessageId = null;
+          await updateOrCreateVoteMessage(channel, match, is4fun);
+        } else {
+          console.log(`✅ Vote message visible at index ${voteMessageIndex} in channel ${channelId}`);
+        }
+      } catch (error) {
+        console.error('❌ Error checking flood condition:', error);
+      }
+    }
+    
+    // Continue monitoring unless match has ended
+    if (matchMap.has(channelId)) {
+      setTimeout(checkFlood, 30 * 1000); // Check every 30 seconds
+    }
+  };
+  
+  // Start the first check after 30 seconds
+  setTimeout(checkFlood, 30 * 1000);
+}
+
+// Add this function to clean up timers when match ends
+function cleanupVoteTimers(channelId) {
+  if (voteMessageTimers.has(channelId)) {
+    clearTimeout(voteMessageTimers.get(channelId));
+    voteMessageTimers.delete(channelId);
+  }
+  if (voteMessageFloodCheck.has(channelId)) {
+    voteMessageFloodCheck.delete(channelId);
+  }
 }
 
 // ---------------- BLOCK SYSTEM ----------------
@@ -1125,7 +1250,7 @@ async function start4funReadyCheck(channel) {
     const declinedArray = Array.from(declined);
     
     const embed = new EmbedBuilder()
-      .setTitle("⚔️ 4Fun Ready Check")
+      .setTitle("⚔️ Ready Check")
       .setDescription(
         `${participants.length} players have queued!\n\n` +
         `**Click ✅ Ready if you're ready**\n` +
@@ -1558,18 +1683,24 @@ async function postQueueMessage(channel) {
 }
 
 async function post4funQueueMessage(channel) {
-  // Check for an existing queue message
-  const existing = (await channel.messages.fetch({ limit: 10 }))
-    .filter(m => m.author.id === client.user.id && m.embeds.length && m.embeds[0].title === "🎉 4Fun Queue")
+  // Check for an existing queue message with better filtering
+  const existing = (await channel.messages.fetch({ limit: 50 })) // Increase limit to 50
+    .filter(m => 
+      m.author.id === client.user.id && 
+      m.embeds.length > 0 && 
+      m.embeds[0].title && 
+      m.embeds[0].title.includes("4Fun Queue") // More flexible matching
+    )
     .first();
 
   if (existing) {
     console.log("4Fun Queue message already exists — reusing it.");
     queueMessage4fun = existing;
     await update4funQueueMessage();
-    return;
+    return existing; // Return the existing message
   }
 
+  // Create new message if none exists
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("join4fun").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("leave4fun").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger),
@@ -1578,6 +1709,7 @@ async function post4funQueueMessage(channel) {
 
   const embed = build4funQueueEmbed();
   queueMessage4fun = await channel.send({ embeds: [embed], components: [row] });
+  return queueMessage4fun;
 }
 
 let update4funQueueTimeout = null;
@@ -1746,21 +1878,23 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     try {
-        // Create the embed for the duo request
+        // Calculate expiration timestamp (5 minutes from now)
+        const expirationTimestamp = Math.floor((Date.now() + DUO_REQUEST_EXPIRY) / 1000);
+        
+        // Create the embed for the duo request with Discord timestamp
         const embed = new EmbedBuilder()
             .setTitle("🤝 Duo Request")
-            .setDescription(`<@${requesterId}> Zaddy wants you in his bed <@${selectedUserId}> for 4fun queue!`)
+            .setDescription(`<@${requesterId}> wants to form a duo with <@${selectedUserId}> for 4fun queue!`)
             .addFields(
                 { name: "Requester", value: `<@${requesterId}>`, inline: true },
                 { name: "Target", value: `<@${selectedUserId}>`, inline: true },
                 { name: "Queue Status", value: targetInQueue ? "✅ Target in queue" : "❌ Target not in queue", inline: true },
-                { name: "Expires", value: "10 minutes", inline: true }
+                { name: "Expires", value: `<t:${expirationTimestamp}:R>`, inline: true }
             )
             .setColor(0x0099FF)
             .setTimestamp();
 
-        // Create accept/decline buttons with both user IDs in the customId
-        const row = new ActionRowBuilder().addComponents(
+          const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder()
                 .setCustomId(`accept_duo_${requesterId}_${selectedUserId}`)
                 .setLabel("✅ Accept")
@@ -1769,7 +1903,7 @@ client.on("interactionCreate", async (interaction) => {
                 .setCustomId(`decline_duo_${requesterId}_${selectedUserId}`)
                 .setLabel("❌ Decline")
                 .setStyle(ButtonStyle.Danger)
-        );
+          );
 
         // Send the duo request to the #duo-requests channel
         const duoMessage = await duoRequestsChannel.send({ 
@@ -1778,16 +1912,17 @@ client.on("interactionCreate", async (interaction) => {
             components: [row] 
         });
 
-        // Store pending request with message info
-        pendingDuoRequests.set(requesterId, {
+        // Create the request data object
+        const requestData = {
             targetId: selectedUserId,
             timestamp: Date.now(),
             messageId: duoMessage.id,
-            channelId: duoRequestsChannel.id
-        });
+            channelId: duoRequestsChannel.id,
+            expirationTimestamp: expirationTimestamp // Store the timestamp for reference
+        };
 
-        // Set expiration timer
-        setTimeout(async () => {
+        // Remove the countdown interval and just keep the expiration timer
+        requestData.timer = setTimeout(async () => {
             if (pendingDuoRequests.has(requesterId)) {
                 const expiredRequest = pendingDuoRequests.get(requesterId);
                 pendingDuoRequests.delete(requesterId);
@@ -1810,13 +1945,16 @@ client.on("interactionCreate", async (interaction) => {
                     console.error("Failed to update expired duo request:", error);
                 }
                 
-                console.log(`⏰ Duo request from ${requesterId} expired`);
+                console.log(`⏰ Duo request from ${requesterId} expired after 5 minutes`);
             }
         }, DUO_REQUEST_EXPIRY);
 
+        // Store the request data
+        pendingDuoRequests.set(requesterId, requestData);
+
         // Update the original interaction
         await interaction.update({
-            content: `✅ Duo request sent to <@${selectedUserId}> in ${duoRequestsChannel}! They have 10 minutes to accept.`,
+            content: `✅ Duo request sent to <@${selectedUserId}> in ${duoRequestsChannel}! They have 5 minutes to accept.`,
             components: []
         });
 
@@ -2050,7 +2188,7 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
 
-    else if (interaction.customId.startsWith("report_win_")) {
+    if (interaction.customId.startsWith("report_win_")) {
       const team = interaction.customId.split("_")[2]; // Gets "1" or "2"
       
       // Find the match for this channel
@@ -2063,7 +2201,7 @@ client.on("interactionCreate", async (interaction) => {
       }
       
       const playerId = interaction.user.id;
-      const isStaff = interaction.member.permissions.has("ManageGuild");
+      const isStaff = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
       
       // STAFF OVERRIDE: Immediate win
       if (isStaff) {
@@ -2095,31 +2233,79 @@ client.on("interactionCreate", async (interaction) => {
       }
       
       // Check if we have enough votes (6 out of 10 players)
-      const totalVotes = match.votes.team1.size + match.votes.team2.size;
       const team1Votes = match.votes.team1.size;
       const team2Votes = match.votes.team2.size;
       
-      let voteMessage = `🗳️ You voted for Team ${team}!\n\n`;
-      voteMessage += `**Current Vote Count:**\n`;
-      voteMessage += `🔵 Team 1: ${team1Votes} votes\n`;
-      voteMessage += `🔴 Team 2: ${team2Votes} votes\n`;
-      voteMessage += `📊 Total votes: ${totalVotes}/10 players\n\n`;
+      // Update or create vote status message
+      await updateOrCreateVoteMessage(interaction.channel, match, false);
       
       // Check for win condition (6 votes for one team)
       if (team1Votes >= 6) {
-        voteMessage += `🏆 **Team 1 has reached 6 votes! Match ending...**`;
-        await interaction.reply({ content: voteMessage, ephemeral: false });
+        await interaction.channel.send(`🏆 **Team 1 has reached 6 votes! Match ending...**`);
         await endMatch(interaction.channel, "1");
       } else if (team2Votes >= 6) {
-        voteMessage += `🏆 **Team 2 has reached 6 votes! Match ending...**`;
-        await interaction.reply({ content: voteMessage, ephemeral: false });
+        await interaction.channel.send(`🏆 **Team 2 has reached 6 votes! Match ending...**`);
         await endMatch(interaction.channel, "2");
       } else {
-        voteMessage += `*Need 6 votes for one team to end the match*`;
-        await interaction.reply({ content: voteMessage, ephemeral: true });
-        
-        // Also update the match message to show current votes
-        await updateMatchVoteDisplay(interaction.channel, match);
+        // Just acknowledge the vote without showing a reply
+        await interaction.deferUpdate().catch(() => {});
+      }
+    }
+
+    else if (interaction.customId.startsWith("report_4fun_win_")) {
+      const team = interaction.customId.split("_")[3];
+      
+      const match = matches4fun.get(interaction.channelId);
+      if (!match) {
+        return interaction.reply({ 
+          content: "❌ No active 4fun match found in this channel.", 
+          ephemeral: true 
+        });
+      }
+      
+      const playerId = interaction.user.id;
+      const isStaff = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
+      
+      if (isStaff) {
+        await end4funMatch(interaction.channel, team);
+        return interaction.reply({ 
+          content: `✅ Staff override: 4fun Match result recorded! Team ${team} wins!`, 
+          ephemeral: true 
+        });
+      }
+      
+      const isInMatch = match.team1.includes(playerId) || match.team2.includes(playerId);
+      if (!isInMatch) {
+        return interaction.reply({ 
+          content: "❌ You are not a player in this 4fun match and cannot vote.", 
+          ephemeral: true 
+        });
+      }
+      
+      match.votes.team1.delete(playerId);
+      match.votes.team2.delete(playerId);
+      
+      if (team === "1") {
+        match.votes.team1.add(playerId);
+      } else {
+        match.votes.team2.add(playerId);
+      }
+      
+      // Update or create 4fun vote status message
+      await updateOrCreateVoteMessage(interaction.channel, match, true);
+      
+      const team1Votes = match.votes.team1.size;
+      const team2Votes = match.votes.team2.size;
+      
+      if (team1Votes >= 6) {
+        await interaction.channel.send(`🏆 **Team 1 has reached 6 votes! 4Fun Match ending...**`);
+        await end4funMatch(interaction.channel, "1");
+      } else if (team2Votes >= 6) {
+        await interaction.channel.send(`🏆 **Team 2 has reached 6 votes! 4Fun Match ending...**`);
+        await end4funMatch(interaction.channel, "2");
+      } else {
+        // Just acknowledge the vote
+        await interaction.deferUpdate().catch(() => {});
       }
     }
 
@@ -2174,54 +2360,90 @@ client.on("interactionCreate", async (interaction) => {
     }
 
     if (interaction.customId.startsWith("accept_duo_") || interaction.customId.startsWith("decline_duo_")) {
-      const parts = interaction.customId.split('_');
-      const requesterId = parts[2];
-      const targetId = parts[3]; // Now we get targetId from the customId
-      const isAccept = interaction.customId.startsWith("accept_duo");
-      
-      // Verify the request exists and the interacting user is the target
-      const request = pendingDuoRequests.get(requesterId);
-      if (!request || request.targetId !== targetId || interaction.user.id !== targetId) {
-          return interaction.reply({
-              content: "❌ This duo request has expired, is invalid, or you are not the intended recipient.",
-              ephemeral: true
-          });
-      }
-      
-      // Process acceptance or decline (your existing logic here)
-      if (isAccept) {
-          // Your existing duo formation logic
-          await interaction.reply(`✅ You have accepted the duo request from <@${requesterId}>!`);
-          
-          // Edit the original request message to show it was accepted
-          try {
-              const duoRequestsChannel = interaction.guild.channels.cache.find(
-                  channel => channel.name === 'duo-requests' && channel.isTextBased()
-              );
-              if (duoRequestsChannel && request.messageId) {
-                  const originalMessage = await duoRequestsChannel.messages.fetch(request.messageId);
-                  const acceptedEmbed = EmbedBuilder.from(originalMessage.embeds[0])
-                      .setColor(0x00FF00) // Green for accepted
-                      .spliceFields(2, 1, { name: "Status", value: "✅ Accepted", inline: true }); // Update status field
-                  
-                  await originalMessage.edit({ 
-                      embeds: [acceptedEmbed], 
-                      components: [] // Remove buttons
-                  });
-              }
-          } catch (error) {
-              console.error("Failed to update duo request message:", error);
-          }
-      } else {
-          // Your existing decline logic
-          await interaction.reply("❌ You have declined the duo request.");
-          
-          // Similar message update for declined requests
-      }
-      
+    const parts = interaction.customId.split('_');
+    const action = parts[0]; // "accept" or "decline"
+    const requesterId = parts[2];
+    const targetId = parts[3];
+    
+    // Verify the request exists and the interacting user is the target
+    const request = pendingDuoRequests.get(requesterId);
+    if (!request || request.targetId !== targetId) {
+        return interaction.reply({
+            content: "❌ This duo request has expired or is invalid.",
+            ephemeral: true
+        });
+    }
+    
+    if (interaction.user.id !== targetId) {
+        return interaction.reply({
+            content: "❌ Only the requested player can respond to this duo request.",
+            ephemeral: true
+        });
+    }
+    
+    if (action === "accept") {
+      // Form the duo partnership
+      const requester = ensurePlayer(requesterId);
+      const target = ensurePlayer(targetId);
+        
+      requester.fun.duoPartner = targetId;
+      target.fun.duoPartner = requesterId;
+      saveData();
+        
       // Remove from pending requests
       pendingDuoRequests.delete(requesterId);
+        
+      // Update the message to show it was accepted
+      const acceptedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+        .setColor(0x00ff00)
+        .spliceFields(3, 1, { name: "Status", value: "✅ Accepted", inline: true });
+        
+      await interaction.message.edit({ 
+        embeds: [acceptedEmbed], 
+        components: [] 
+      });
+        
+      await interaction.reply({
+        content: `✅ You have accepted the duo request from <@${requesterId}>! You are now duo partners.`,
+        ephemeral: true
+      });
+
+      if (request.timer) {
+        clearTimeout(request.timer);
+      }
+
+    } else {
+        // Decline the request
+        pendingDuoRequests.delete(requesterId);
+        
+        // Update the message to show it was declined
+        const declinedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+            .setColor(0xff0000)
+            .spliceFields(3, 1, { name: "Status", value: "❌ Declined", inline: true });
+        
+        await interaction.message.edit({ 
+            embeds: [declinedEmbed], 
+            components: [] 
+        });
+        
+        await interaction.reply({
+            content: "❌ You have declined the duo request.",
+            ephemeral: true
+        });
+        
+        // Notify the requester
+        try {
+            const requesterUser = await client.users.fetch(requesterId);
+            await requesterUser.send(`❌ <@${targetId}> declined your duo request.`);
+        } catch (error) {
+            // If DMs are disabled, that's okay
+        }
+
+        if (request.timer) {
+          clearTimeout(request.timer);
+        }
     }
+  }
 
     if (interaction.customId === 'duo4fun') {
       const requesterId = interaction.user.id;
@@ -2348,70 +2570,6 @@ client.on("interactionCreate", async (interaction) => {
         if (err.code !== 10062) console.error("4fun Leave deferUpdate failed:", err);
       }
     }
-
-    // 4fun match reporting buttons
-    else if (interaction.customId.startsWith("report_4fun_win_")) {
-      const team = interaction.customId.split("_")[3];
-      
-      const match = matches4fun.get(interaction.channelId);
-      if (!match) {
-        return interaction.reply({ 
-          content: "❌ No active 4fun match found in this channel.", 
-          ephemeral: true 
-        });
-      }
-      
-      const playerId = interaction.user.id;
-      const isStaff = interaction.member.permissions.has("ManageGuild");
-      
-      if (isStaff) {
-        await end4funMatch(interaction.channel, team);
-        return interaction.reply({ 
-          content: `✅ Staff override: 4fun Match result recorded! Team ${team} wins!`, 
-          ephemeral: true 
-        });
-      }
-      
-      const isInMatch = match.team1.includes(playerId) || match.team2.includes(playerId);
-      if (!isInMatch) {
-        return interaction.reply({ 
-          content: "❌ You are not a player in this 4fun match and cannot vote.", 
-          ephemeral: true 
-        });
-      }
-      
-      match.votes.team1.delete(playerId);
-      match.votes.team2.delete(playerId);
-      
-      if (team === "1") {
-        match.votes.team1.add(playerId);
-      } else {
-        match.votes.team2.add(playerId);
-      }
-      
-      const totalVotes = match.votes.team1.size + match.votes.team2.size;
-      const team1Votes = match.votes.team1.size;
-      const team2Votes = match.votes.team2.size;
-      
-      let voteMessage = `🗳️ You voted for Team ${team}!\n\n`;
-      voteMessage += `**Current Vote Count:**\n`;
-      voteMessage += `🔵 Team 1: ${team1Votes} votes\n`;
-      voteMessage += `🔴 Team 2: ${team2Votes} votes\n`;
-      voteMessage += `📊 Total votes: ${totalVotes}/10 players\n\n`;
-      
-      if (team1Votes >= 6) {
-        voteMessage += `🏆 **Team 1 has reached 6 votes! 4Fun Match ending...**`;
-        await interaction.reply({ content: voteMessage, ephemeral: false });
-        await end4funMatch(interaction.channel, "1");
-      } else if (team2Votes >= 6) {
-        voteMessage += `🏆 **Team 2 has reached 6 votes! 4Fun Match ending...**`;
-        await interaction.reply({ content: voteMessage, ephemeral: false });
-        await end4funMatch(interaction.channel, "2");
-      } else {
-        voteMessage += `*Need 6 votes for one team to end the 4fun match*`;
-        await interaction.reply({ content: voteMessage, ephemeral: true });
-      }
-    }
   }
 
   // ---------------- SELECT MENUS ----------------
@@ -2517,13 +2675,14 @@ if (interaction.isStringSelectMenu() && interaction.customId.startsWith("role_se
 client.on("messageCreate", async (message) => {
   // ---------------- AUTO-DELETE QUEUE CHANNEL MESSAGES ----------------
   // Delete ANY message in queue channel after 60 seconds, except the main queue embed
-  if (message.channel.name === 'queue') {
+  if (message.channel.name === 'queue' || message.channel.name === '4fun-queue') {
     // Don't delete bot messages that are part of ready checks or other important bot messages
     if (message.embeds.length > 0) {
       const embed = message.embeds[0];
       if (embed.title && (
         embed.title.includes("Ready Check") || 
-        embed.title.includes("Current Queue") 
+        embed.title.includes("Current Queue") ||
+        embed.title.includes("4Fun Queue")
       )) {
         return; // Skip deletion for important bot embeds
       }
@@ -2619,7 +2778,7 @@ client.on("messageCreate", async (message) => {
 
     // 4fun end match command
     if (cmd === "!4funendmatch") {
-      if (!message.member.permissions.has("ManageGuild")) {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
         return message.reply("❌ Only staff members can use this command.");
       }
       
@@ -2663,7 +2822,7 @@ client.on("messageCreate", async (message) => {
 
     // ---------------- !adjustlp (STAFF ONLY) ----------------
     if (cmd === "!adjustlp") {
-      if (!message.member.permissions.has("ManageGuild")) {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
         return message.reply("❌ Only staff members can use this command.");
       }
 
@@ -2732,7 +2891,7 @@ client.on("messageCreate", async (message) => {
 
     // ---------------- !adjustrecord (STAFF ONLY) ----------------
     if (cmd === "!adjustrecord") {
-      if (!message.member.permissions.has("ManageGuild")) {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
         return message.reply("❌ Only staff members can use this command.");
       }
 
@@ -2823,7 +2982,7 @@ client.on("messageCreate", async (message) => {
 
     // ---------------- !addwin / !addloss (STAFF ONLY) ----------------
     if (cmd === "!addwin" || cmd === "!addloss") {
-      if (!message.member.permissions.has("ManageGuild")) {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
         return message.reply("❌ Only staff members can use this command.");
       }
 
@@ -2919,7 +3078,7 @@ client.on("messageCreate", async (message) => {
 
     // ---------------- !smurfing (STAFF ONLY) ----------------
     if (cmd === "!smurfing") {
-      if (!message.member.permissions.has("ManageGuild")) {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
         return message.reply("❌ Only staff members can use this command.");
       }
       
@@ -3241,7 +3400,7 @@ client.on("messageCreate", async (message) => {
 
     // ---------------- !undosmurfing (STAFF ONLY) ----------------
     if (cmd === "!undosmurfing") {
-      if (!message.member.permissions.has("ManageGuild")) {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
         return message.reply("❌ Only staff members can use this command.");
       }
 
@@ -3478,7 +3637,7 @@ client.on("messageCreate", async (message) => {
 
     // ---------------- !forcejoin (STAFF ONLY) ----------------
   if (cmd === "!forcejoin") {
-    if (!message.member.permissions.has("ManageGuild")) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
       return message.reply("❌ Only staff members can use this command.");
     }
 
@@ -3705,7 +3864,7 @@ client.on("messageCreate", async (message) => {
 
   // ---------------- !cleartimeout ----------------
   if (cmd === "!cleartimeout") {
-    if (!message.member.permissions.has("ManageGuild")) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
       return message.reply("❌ Only staff members can use this command.");
     }
 
@@ -3778,7 +3937,7 @@ client.on("messageCreate", async (message) => {
 
   // ---------------- !ban ----------------
     if (cmd === "!queueban") {
-      if (!message.member.permissions.has("ManageGuild")) {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
         return message.reply("❌ Only staff members can use this command.");
       }
 
@@ -3806,7 +3965,7 @@ client.on("messageCreate", async (message) => {
 
     // ---------------- !unban ----------------
     if (cmd === "!queueunban") {
-      if (!message.member.permissions.has("ManageGuild")) {
+      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
         return message.reply("❌ Only staff members can use this command.");
       }
 
@@ -3826,7 +3985,7 @@ client.on("messageCreate", async (message) => {
     }
 
   if (cmd === "!remove") {
-    if (!message.member.permissions.has("ManageGuild")) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
       return message.reply("❌ You need Manage Server permissions to do that.");
     }
     const userMention = args[0];
@@ -3842,7 +4001,7 @@ client.on("messageCreate", async (message) => {
   }
 
   if (cmd === "!cancelmatch") {
-    if (!message.member.permissions.has("ManageGuild")) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
       return message.reply("❌ Only staff members can use this command.");
     }
 
@@ -3918,6 +4077,8 @@ client.on("messageCreate", async (message) => {
       console.error("Error in cancelmatch:", err);
       
       // Even if there's an error, make sure the match is cleared
+      // Clean up vote timers
+      cleanupVoteTimers(message.channel.id);
       matches.delete(message.channel.id);
       saveData();
       await updateQueueMessage();
@@ -4143,7 +4304,7 @@ client.on("messageCreate", async (message) => {
   // In your messageCreate handler, update the !endmatch command:
   if (cmd === "!endmatch") {
     // Only allow staff (ManageGuild permission) to run this command
-    if (!message.member.permissions.has("ManageGuild")) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
       return message.reply("❌ Only staff members can use this command.");
     }
     
@@ -4158,7 +4319,7 @@ client.on("messageCreate", async (message) => {
 
   if (cmd === "!clearqueue") {
   // Only staff members
-  if (!message.member.permissions.has("ManageGuild")) {
+  if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
     return message.reply("❌ Only staff members can use this command.");
   }
 
@@ -4173,7 +4334,7 @@ client.on("messageCreate", async (message) => {
   }
 
   if (cmd === "!togglequeue") {
-    if (!message.member.permissions.has("ManageGuild")) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
       return message.reply("❌ Only staff members can use this command.");
     }
 
@@ -4188,7 +4349,7 @@ client.on("messageCreate", async (message) => {
 
   // ---------------- !forceregister ----------------
   if (message.content.startsWith("!forceregister")) {
-    if (!message.member.permissions.has("ManageGuild")) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
       return message.reply("❌ You need Manage Server permissions to do that.");
     }
     
@@ -4473,7 +4634,6 @@ client.on("messageCreate", async (message) => {
     await message.channel.send({ embeds: [embed] });
   }
 
-  // Add this to your COMMANDS section
   if (cmd === "!recentmatches") {
     if (!message.member.permissions.has("ManageGuild")) {
       return message.reply("❌ Only staff members can use this command.");
@@ -4489,13 +4649,40 @@ client.on("messageCreate", async (message) => {
     const matchList = recentMatches.map(match => {
       const date = new Date(match.timestamp).toLocaleDateString();
       const status = match.voided ? "❌ VOIDED" : "✅ ACTIVE";
-      return `**${match.id}** - ${date} - Team ${match.winner} won - ${status}`;
+      
+      // Calculate average ELO BEFORE the match using oldIHP values
+      let team1PreMatchAvg = "N/A";
+      let team2PreMatchAvg = "N/A";
+      
+      if (match.eloChanges && match.eloChanges.length > 0) {
+        // Get team1 players' old IHP (before match)
+        const team1PreMatchIHP = match.team1.map(playerId => {
+          const playerChange = match.eloChanges.find(change => change.id === playerId);
+          return playerChange ? playerChange.oldIHP : 0;
+        }).filter(ihp => ihp > 0);
+        
+        // Get team2 players' old IHP (before match)
+        const team2PreMatchIHP = match.team2.map(playerId => {
+          const playerChange = match.eloChanges.find(change => change.id === playerId);
+          return playerChange ? playerChange.oldIHP : 0;
+        }).filter(ihp => ihp > 0);
+        
+        // Calculate averages
+        if (team1PreMatchIHP.length > 0) {
+          team1PreMatchAvg = Math.round(team1PreMatchIHP.reduce((a, b) => a + b, 0) / team1PreMatchIHP.length);
+        }
+        if (team2PreMatchIHP.length > 0) {
+          team2PreMatchAvg = Math.round(team2PreMatchIHP.reduce((a, b) => a + b, 0) / team2PreMatchIHP.length);
+        }
+      }
+      
+      return `**${match.id}** - ${date} - Team ${match.winner} won - 🔵 ${team1PreMatchAvg} | 🔴 ${team2PreMatchAvg} - ${status}`;
     }).join('\n');
 
     const embed = new EmbedBuilder()
       .setTitle("📜 Recent Matches")
       .setDescription(matchList)
-      .setFooter({ text: "Use !changewinner <match_id> <1|2> or !voidmatch <match_id>" })
+      .setFooter({ text: "Shows average ELO before the match was scored" })
       .setColor(0x3498db)
       .setTimestamp();
 
@@ -5232,6 +5419,7 @@ async function makeTeams(channel) {
   matches.set(matchChannel.id, matchData);
 
   queue = [];
+  startVoteMessageFloodMonitoring(matchChannel, matchData, false);
   saveData();
   updateQueueMessage();
 }
@@ -5524,12 +5712,16 @@ async function make4funTeams(channel) {
   matches4fun.set(matchChannel.id, matchData);
 
   queue4fun = [];
+  startVoteMessageFloodMonitoring(matchChannel, matchData, false);
   saveData();
   update4funQueueMessage();
 }
 
 // ---------------- END MATCH ----------------
+// ---------------- END MATCH ----------------
 async function endMatch(channel, winner, isVoided = false) {
+  // Clean up vote timers
+  cleanupVoteTimers(channel.id);
   // Get the match for this specific channel
   const match = matches.get(channel.id);
   if (!match) {
@@ -5553,7 +5745,7 @@ async function endMatch(channel, winner, isVoided = false) {
   const winnersAvgElo = winners.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / winners.length;
   const losersAvgElo = losers.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / losers.length;
   
-  // Calculate Elo difference adjustment (infinite scaling every 25 Elo)
+  // Calculate Elo difference adjustment (balanced system)
   const eloDifference = winnersAvgElo - losersAvgElo;
   const eloAdjustment = Math.floor(Math.abs(eloDifference) / 25);
 
@@ -5618,10 +5810,17 @@ async function endMatch(channel, winner, isVoided = false) {
     // Calculate streak adjustment
     const lpCalculation = calculateStreakAdjustment(p, true);
     
-    // Apply Elo difference adjustment for winners
+    // === MODIFIED ELO DIFFERENCE ADJUSTMENT FOR WINNERS ===
     // If winners have higher Elo, they get less LP (negative adjustment)
     // If winners have lower Elo, they get more LP (positive adjustment)
-    const eloDiffLP = eloDifference < 0 ? eloAdjustment : -eloAdjustment;
+    let eloDiffLP;
+    if (eloDifference > 0) {
+      // Winners are higher rated - they gain 1 less LP per 25 Elo difference
+      eloDiffLP = -eloAdjustment;
+    } else {
+      // Winners are lower rated - they gain 1 more LP per 25 Elo difference  
+      eloDiffLP = eloAdjustment;
+    }
     
     // Update streak
     if (p.streakType === "win") {
@@ -5681,10 +5880,17 @@ async function endMatch(channel, winner, isVoided = false) {
     // Calculate streak adjustment
     const lpCalculation = calculateStreakAdjustment(p, false);
     
-    // Apply Elo difference adjustment for losers
-    // If losers have higher Elo, they lose more LP (negative adjustment)
-    // If losers have lower Elo, they lose less LP (positive adjustment)
-    const eloDiffLP = eloDifference > 0 ? -eloAdjustment : eloAdjustment;
+    // === MODIFIED ELO DIFFERENCE ADJUSTMENT FOR LOSERS ===
+    // If losers have higher Elo, they lose less LP (positive adjustment - since base is negative)
+    // If losers have lower Elo, they lose more LP (negative adjustment - making the loss worse)
+    let eloDiffLP;
+    if (eloDifference > 0) {
+      // Losers are lower rated - they lose 1 more LP per 25 Elo difference
+      eloDiffLP = -eloAdjustment;
+    } else {
+      // Losers are higher rated - they lose 1 less LP per 25 Elo difference
+      eloDiffLP = eloAdjustment;
+    }
     
     // Update streak
     if (p.streakType === "loss") {
@@ -5786,7 +5992,18 @@ async function endMatch(channel, winner, isVoided = false) {
     return `${winLoss} <@${change.id}>: ${oldRankDisplay} ${change.oldLP}LP → ${newRankDisplay} ${change.newLP}LP (${changeSymbol} ${changeText} ELO)`;
   }).join('\n');
 
-  // Elo difference information (REMOVED LP adjustment part)
+  // Calculate team average Elo for display - USE PRE-MATCH ELO
+  const team1PreMatchAvg = Math.round(team1.reduce((sum, id) => {
+    const playerChange = eloChanges.find(change => change.id === id);
+    return sum + (playerChange ? playerChange.oldIHP : getIHP(ensurePlayer(id)));
+  }, 0) / team1.length);
+
+  const team2PreMatchAvg = Math.round(team2.reduce((sum, id) => {
+    const playerChange = eloChanges.find(change => change.id === id);
+    return sum + (playerChange ? playerChange.oldIHP : getIHP(ensurePlayer(id)));
+  }, 0) / team2.length);
+
+  // Elo difference information
   const eloDifferenceInfo = `**Elo Difference:** ${Math.round(eloDifference)}`;
 
   // ADD MATCH ID TO THE EMBED TITLE AND DESCRIPTION
@@ -5794,8 +6011,8 @@ async function endMatch(channel, winner, isVoided = false) {
     .setTitle(`📜 Match History - ID: ${matchId}`)
     .setDescription(`**Match ID:** ${matchId}\n**Winner:** ${winner === "1" ? "🟦 Team 1 (Blue)" : "🟥 Team 2 (Red)"}\n${eloDifferenceInfo}`)
     .addFields(
-      { name: `🟦 Team 1 (Blue) - Avg Elo: ${team1AvgElo}`, value: team1Players, inline: false },
-      { name: `🟥 Team 2 (Red) - Avg Elo: ${team2AvgElo}`, value: team2Players, inline: false },
+      { name: `🟦 Team 1 (Blue) - Avg Elo: ${team1PreMatchAvg}`, value: team1Players, inline: false },
+      { name: `🟥 Team 2 (Red) - Avg Elo: ${team2PreMatchAvg}`, value: team2Players, inline: false },
       { name: "📈 ELO Changes", value: eloChangesText || "No changes", inline: false }
     )
     .setColor(winner === "1" ? 0x3498db : 0xe74c3c)
@@ -5881,6 +6098,8 @@ async function endMatch(channel, winner, isVoided = false) {
 }
 
 async function end4funMatch(channel, winner) {
+  // Clean up vote timers
+  cleanupVoteTimers(channel.id);
   const match = matches4fun.get(channel.id);
   if (!match) {
     return channel.send("❌ No active 4fun match found in this channel.");
@@ -5977,18 +6196,21 @@ client.once("ready", async () => {
   // ✅ Post role selection in the channel instead of DMs
   await postRoleSelectionMessage(howtoplayChannel);
 
-  // Queue setup (keep existing)
+  // Queue setup - with improved existing message detection
   let queueChannel = guild.channels.cache.find((c) => c.name === "queue");
   if (!queueChannel) {
     queueChannel = await guild.channels.create({ name: "queue", type: 0 });
+    console.log("Created new queue channel");
   }
 
-  // 4fun queue setup
+  // 4fun queue setup - with improved existing message detection
   let queue4funChannel = guild.channels.cache.find((c) => c.name === "4fun-queue");
   if (!queue4funChannel) {
     queue4funChannel = await guild.channels.create({ name: "4fun-queue", type: 0 });
+    console.log("Created new 4fun-queue channel");
   }
 
+  // These functions will now reuse existing messages if found
   await post4funQueueMessage(queue4funChannel);
   await postQueueMessage(queueChannel);
 
