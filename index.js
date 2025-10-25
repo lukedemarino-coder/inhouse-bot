@@ -1468,7 +1468,7 @@ async function createDraftLolLobby() {
     const page = await browser.newPage();
     
     // Set a reasonable timeout
-    await page.setDefaultTimeout(60000); // Increased to 60 seconds
+    await page.setDefaultTimeout(60000);
     
     // Set viewport to ensure elements are visible
     await page.setViewport({ width: 1280, height: 720 });
@@ -1527,9 +1527,9 @@ async function createDraftLolLobby() {
         !input.classList.contains('inputRed')
       );
       
-      const blue = blueInput?.value || '';
-      const red = redInput?.value || '';
-      const spectator = spectatorInput?.value || '';
+      const blue = blueInput?.value?.trim() || '';
+      const red = redInput?.value?.trim() || '';
+      const spectator = spectatorInput?.value?.trim() || '';
       
       console.log('Extracted links:', { blue, red, spectator });
       return { blue, red, spectator };
@@ -1550,11 +1550,7 @@ async function createDraftLolLobby() {
     console.log(`🔴 Red: ${links.red}`);
     console.log(`👁️ Spectator: ${links.spectator}`);
     
-    // The lobby URL is the base URL since we're already on the creation page
-    const lobbyUrl = 'https://draftlol.dawe.gg/';
-    
     return {
-      lobby: lobbyUrl,
       blue: links.blue,
       red: links.red,
       spectator: links.spectator
@@ -2019,7 +2015,7 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.customId === 'blue_draft' || interaction.customId === 'red_draft' || interaction.customId === 'spectator_draft') {
       // Find the match for this channel
       const match = matches.get(interaction.channelId);
-      if (!match || !match.drafters) {
+      if (!match) {
         return interaction.reply({
           content: "❌ No active match found or draft links not available.",
           ephemeral: true
@@ -2033,11 +2029,11 @@ client.on("interactionCreate", async (interaction) => {
       if (interaction.customId === 'blue_draft') {
         // Check if user is staff OR the assigned blue drafter
         const isStaff = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
-        const isAssignedDrafter = userId === match.drafters.blue;
+        const isAssignedDrafter = match.drafters && userId === match.drafters.blue;
         
         if (!isStaff && !isAssignedDrafter) {
           return interaction.reply({
-            content: `❌ Only staff members or the assigned blue team drafter (<@${match.drafters.blue}>) can access this draft link.`,
+            content: `❌ Only staff members or the assigned blue team drafter (<@${match.drafters?.blue}>) can access this draft link.`,
             ephemeral: true
           });
         }
@@ -2047,11 +2043,11 @@ client.on("interactionCreate", async (interaction) => {
       else if (interaction.customId === 'red_draft') {
         // Check if user is staff OR the assigned red drafter
         const isStaff = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
-        const isAssignedDrafter = userId === match.drafters.red;
+        const isAssignedDrafter = match.drafters && userId === match.drafters.red;
         
         if (!isStaff && !isAssignedDrafter) {
           return interaction.reply({
-            content: `❌ Only staff members or the assigned red team drafter (<@${match.drafters.red}>) can access this draft link.`,
+            content: `❌ Only staff members or the assigned red team drafter (<@${match.drafters?.red}>) can access this draft link.`,
             ephemeral: true
           });
         }
@@ -2060,13 +2056,24 @@ client.on("interactionCreate", async (interaction) => {
       }
       else if (interaction.customId === 'spectator_draft') {
         // Spectator link is available to ANYONE in the server
-        // No restrictions - anyone can view the draft
         link = match.spectator;
         message = '👁️ **Spectator Link**';
       }
 
+      // Debug logging to see what links are being retrieved
+      console.log(`🔗 Retrieved draft link for ${interaction.customId}:`, link);
+
+      // Check if we have a valid link (not just the base URL)
+      if (!link || link === 'https://draftlol.dawe.gg' || !link.includes('draftlol.dawe.gg/')) {
+        console.error('❌ Invalid draft link retrieved:', link);
+        return interaction.reply({
+          content: `❌ Draft link is not available or failed to generate. Please create draft links manually at https://draftlol.dawe.gg`,
+          ephemeral: true
+        });
+      }
+
       await interaction.reply({
-        content: `${message}\n${link}\n\n*This link will expire when the draft is completed*`,
+        content: `${message}\n${link}`,
         ephemeral: true
       });
     }
@@ -2074,7 +2081,7 @@ client.on("interactionCreate", async (interaction) => {
     // Similarly update the 4fun draft link buttons:
     if (interaction.customId === 'blue_draft_4fun' || interaction.customId === 'red_draft_4fun' || interaction.customId === 'spectator_draft_4fun') {
       const match = matches4fun.get(interaction.channelId);
-      if (!match || !match.drafters) {
+      if (!match) {
         return interaction.reply({
           content: "❌ No active 4fun match found or draft links not available.",
           ephemeral: true
@@ -2088,11 +2095,11 @@ client.on("interactionCreate", async (interaction) => {
       if (interaction.customId === 'blue_draft_4fun') {
         // Check if user is staff OR the assigned blue drafter
         const isStaff = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
-        const isAssignedDrafter = userId === match.drafters.blue;
+        const isAssignedDrafter = match.drafters && userId === match.drafters.blue;
         
         if (!isStaff && !isAssignedDrafter) {
           return interaction.reply({
-            content: `❌ Only staff members or the assigned blue team drafter (<@${match.drafters.blue}>) can access this draft link.`,
+            content: `❌ Only staff members or the assigned blue team drafter (<@${match.drafters?.blue}>) can access this draft link.`,
             ephemeral: true
           });
         }
@@ -2102,11 +2109,11 @@ client.on("interactionCreate", async (interaction) => {
       else if (interaction.customId === 'red_draft_4fun') {
         // Check if user is staff OR the assigned red drafter
         const isStaff = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
-        const isAssignedDrafter = userId === match.drafters.red;
+        const isAssignedDrafter = match.drafters && userId === match.drafters.red;
         
         if (!isStaff && !isAssignedDrafter) {
           return interaction.reply({
-            content: `❌ Only staff members or the assigned red team drafter (<@${match.drafters.red}>) can access this draft link.`,
+            content: `❌ Only staff members or the assigned red team drafter (<@${match.drafters?.red}>) can access this draft link.`,
             ephemeral: true
           });
         }
@@ -2115,17 +2122,27 @@ client.on("interactionCreate", async (interaction) => {
       }
       else if (interaction.customId === 'spectator_draft_4fun') {
         // Spectator link is available to ANYONE in the server
-        // No restrictions - anyone can view the draft
         link = match.spectator;
         message = '👁️ **Spectator Link**';
       }
 
+      // Debug logging
+      console.log(`🔗 Retrieved 4fun draft link for ${interaction.customId}:`, link);
+
+      // Check if we have a valid link
+      if (!link || link === 'https://draftlol.dawe.gg' || !link.includes('draftlol.dawe.gg/')) {
+        console.error('❌ Invalid 4fun draft link retrieved:', link);
+        return interaction.reply({
+          content: `❌ Draft link is not available or failed to generate. Please create draft links manually at https://draftlol.dawe.gg`,
+          ephemeral: true
+        });
+      }
+
       await interaction.reply({
-        content: `${message}\n${link}\n\n*This link will expire when the draft is completed*`,
+        content: `${message}\n${link}`,
         ephemeral: true
       });
     }
-
 
     // --- Report Win Buttons ---
     if (interaction.customId === 'open_role_selection') {
