@@ -1468,7 +1468,7 @@ async function createDraftLolLobby() {
     const page = await browser.newPage();
     
     // Set a reasonable timeout
-    await page.setDefaultTimeout(30000);
+    await page.setDefaultTimeout(60000); // Increased to 60 seconds
     
     // Set viewport to ensure elements are visible
     await page.setViewport({ width: 1280, height: 720 });
@@ -1477,67 +1477,72 @@ async function createDraftLolLobby() {
     console.log('🌐 Navigating to draftlol.dawe.gg...');
     await page.goto('https://draftlol.dawe.gg/', { 
       waitUntil: 'networkidle2',
-      timeout: 30000
+      timeout: 60000
     });
 
-    // Wait for the page to load completely - look for the create lobby section
+    // Wait for the page to load completely
     console.log('⏳ Waiting for page to load...');
-    await page.waitForSelector('body', { timeout: 10000 });
+    await page.waitForSelector('body', { timeout: 15000 });
     
-    // Wait for the create lobby button to be available
+    // Wait for the create lobby button to be available and clickable
     console.log('🔍 Looking for Create Lobby button...');
-    await page.waitForSelector('div.sendButton', { timeout: 15000 });
+    await page.waitForSelector('div.sendButton', { timeout: 20000 });
     
     // Click "Create Lobby"
     console.log('🖱️ Clicking Create Lobby button...');
     await page.click('div.sendButton');
     
-    // Wait for blue and red inputs to appear
-    console.log('⏳ Waiting for team links to generate...');
-    await page.waitForSelector('.createContainer input.inputBlue', { timeout: 10000 });
-    await page.waitForSelector('.createContainer input.inputRed', { timeout: 10000 });
+    // Wait for the lobby creation to complete and links to appear
+    console.log('⏳ Waiting for lobby creation and links to generate...');
     
-    // Wait for spectator input (third input that's not blue or red)
-    console.log('⏳ Waiting for spectator link...');
+    // Wait for the input fields to appear and have values
     await page.waitForFunction(() => {
-      const container = document.querySelector('.createContainer');
-      if (!container) return false;
-      const inputs = Array.from(container.querySelectorAll('input[type=text]'));
-      return inputs.some((input) => !input.classList.contains('inputBlue') && !input.classList.contains('inputRed'));
-    }, { timeout: 10000 });
+      const blueInput = document.querySelector('.inputBlue');
+      const redInput = document.querySelector('.inputRed');
+      const inputs = Array.from(document.querySelectorAll('input[type=text]'));
+      const spectatorInput = inputs.find(input => 
+        !input.classList.contains('inputBlue') && 
+        !input.classList.contains('inputRed')
+      );
+      
+      return blueInput && blueInput.value && 
+             redInput && redInput.value && 
+             spectatorInput && spectatorInput.value &&
+             blueInput.value.includes('draftlol.dawe.gg/') &&
+             redInput.value.includes('draftlol.dawe.gg/') &&
+             spectatorInput.value.includes('draftlol.dawe.gg/');
+    }, { timeout: 30000, polling: 1000 });
     
-    // Wait a bit more to ensure all links are populated - FIXED: Use setTimeout instead of waitForTimeout
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log('✅ Lobby created successfully, extracting links...');
     
     // Grab all three links from the input fields
-    console.log('📋 Extracting draft links...');
     const links = await page.evaluate(() => {
-      const container = document.querySelector('.createContainer');
-      if (!container) {
-        console.error('No createContainer found');
-        return { blue: '', red: '', spectator: '' };
-      }
-      
-      const blueInput = container.querySelector('.inputBlue');
-      const redInput = container.querySelector('.inputRed');
+      const blueInput = document.querySelector('.inputBlue');
+      const redInput = document.querySelector('.inputRed');
       
       // Find the spectator input (third input that's not blue or red)
-      const inputs = Array.from(container.querySelectorAll('input[type=text]'));
-      const spectatorInput = inputs.find(
-        (input) => !input.classList.contains('inputBlue') && !input.classList.contains('inputRed')
+      const inputs = Array.from(document.querySelectorAll('input[type=text]'));
+      const spectatorInput = inputs.find(input => 
+        !input.classList.contains('inputBlue') && 
+        !input.classList.contains('inputRed')
       );
       
       const blue = blueInput?.value || '';
       const red = redInput?.value || '';
       const spectator = spectatorInput?.value || '';
       
-      console.log('Found links:', { blue, red, spectator });
+      console.log('Extracted links:', { blue, red, spectator });
       return { blue, red, spectator };
     });
 
-    // Validate that we got the links
-    if (!links.blue || !links.red || !links.spectator) {
-      throw new Error('Failed to extract all draft links');
+    // Validate that we got proper draft links
+    if (!links.blue || !links.red || !links.spectator || 
+        !links.blue.includes('draftlol.dawe.gg/') || 
+        !links.red.includes('draftlol.dawe.gg/') || 
+        !links.spectator.includes('draftlol.dawe.gg/')) {
+      
+      console.error('❌ Invalid links extracted:', links);
+      throw new Error('Failed to extract valid draft links');
     }
 
     console.log('✅ Draft lobby created successfully!');
@@ -1557,7 +1562,15 @@ async function createDraftLolLobby() {
 
   } catch (error) {
     console.error('❌ Puppeteer error creating draft lobby:', error);
-    throw new Error('Make draft links manually at https://draftlol.dawe.gg');
+    
+    // Provide more detailed error information
+    if (error.message.includes('timeout')) {
+      throw new Error('Draft lobby creation timed out. Please try again or create draft links manually at https://draftlol.dawe.gg');
+    } else if (error.message.includes('Failed to extract valid draft links')) {
+      throw new Error('Draft links were not generated properly. Please create draft links manually at https://draftlol.dawe.gg');
+    } else {
+      throw new Error('Failed to create draft lobby automatically. Please create draft links manually at https://draftlol.dawe.gg');
+    }
   } finally {
     // Always close the browser
     if (browser) {
