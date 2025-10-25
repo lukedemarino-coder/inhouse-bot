@@ -5433,16 +5433,6 @@ async function makeTeams(channel) {
     );
 
     components.push(teamRow);
-    
-    // Update embed description to show assigned drafters
-    embedDescription = `**Assigned Drafters:**\n` +
-      `🔵 Blue Team: <@${team1HighestElo}> (Highest Elo)\n` +
-      `🔴 Red Team: <@${team2HighestElo}> (Highest Elo)\n\n` +
-      `**Team OP.GG Links:**\n` +
-      `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
-      `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
-      `**Click your team's draft button above - Only assigned drafters can access links**\n\n` +
-      `**After match, vote with Team Won buttons - 6/10 votes needed**`;
   }
 
   const managementRow = new ActionRowBuilder().addComponents(
@@ -5458,8 +5448,26 @@ async function makeTeams(channel) {
 
   components.push(managementRow);
 
-  // Create embed with assigned drafters and OP.GG links
+  // Create embed description based on draft success
   let embedDescription = "";
+  if (draftSuccess) {
+    const team1HighestElo = team1Sorted[0];
+    const team2HighestElo = team2Sorted[0];
+    
+    embedDescription = `**Assigned Drafters:**\n` +
+      `🔵 Blue Team: <@${team1HighestElo}> (Highest Elo)\n` +
+      `🔴 Red Team: <@${team2HighestElo}> (Highest Elo)\n\n` +
+      `**Team OP.GG Links:**\n` +
+      `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
+      `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
+      `**Click your team's draft button above - Only assigned drafters can access links**\n\n` +
+      `**After match, vote with Team Won buttons - 6/10 votes needed**`;
+  } else {
+    embedDescription = `**Team OP.GG Links:**\n` +
+      `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
+      `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
+      `**After match, vote with Team Won buttons - 6/10 votes needed**`;
+  }
 
   const matchEmbed = new EmbedBuilder()
     .setTitle("🎮 Match Lobby")
@@ -5485,7 +5493,7 @@ async function makeTeams(channel) {
 
   // Only add content if draft links failed
   if (!draftSuccess) {
-    messageOptions.content = `❌ Failed to create draft lobby. Players will need to make draft manually.`;
+    messageOptions.content = `❌ Failed to create draft lobby. Players will need to make draft at https://draftlol.dawe.gg/ manually.`;
   }
 
   // Send the message
@@ -5750,6 +5758,22 @@ async function make4funTeams(channel) {
     `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
     `**After match, vote with Team Won buttons - 6/10 votes needed**`;
 
+  // Update embed description if draft was successful
+  if (draftSuccess) {
+    const team1Sorted = [...bestTeam1].sort((a,b) => playerData[b].fun.hiddenMMR - playerData[a].fun.hiddenMMR);
+    const team2Sorted = [...bestTeam2].sort((a,b) => playerData[b].fun.hiddenMMR - playerData[a].fun.hiddenMMR);
+    
+    embedDescription = `**4Fun Match**\n\n` +
+      `**Assigned Drafters:**\n` +
+      `🔵 Blue Team: <@${team1Sorted[0]}> (Highest MMR)\n` +
+      `🔴 Red Team: <@${team2Sorted[0]}> (Highest MMR)\n\n` +
+      `**Team OP.GG Links:**\n` +
+      `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
+      `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
+      `**Click your team's draft button above - Only assigned drafters can access links**\n\n` +
+      `**After match, vote with Team Won buttons - 6/10 votes needed**`;
+  }
+
   const matchEmbed = new EmbedBuilder()
     .setTitle("🎉 4Fun Match Lobby")
     .setDescription(embedDescription)
@@ -5773,7 +5797,7 @@ async function make4funTeams(channel) {
   };
 
   if (!draftSuccess) {
-    messageOptions.content = `❌ Failed to create draft lobby. Players will need to make draft manually.`;
+    messageOptions.content = `❌ Failed to create draft lobby. Players will need to make draft at https://draftlol.dawe.gg/ manually.`;
   }
 
   const matchData = {
