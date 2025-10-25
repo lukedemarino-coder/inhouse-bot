@@ -5361,6 +5361,31 @@ async function makeTeams(channel) {
     lobby: "https://draftlol.dawe.gg"
   };
 
+  const matchData = {
+    team1: bestTeam1,
+    team2: bestTeam2,
+    matchChannel,
+    matchCategory,
+    team1VC,
+    team2VC,
+    team1Roles,
+    team2Roles,
+    blue: draftLinks.blue,
+    red: draftLinks.red,
+    spectator: draftLinks.spectator,
+    matchId: matchId,
+    matchMessageId: null,
+    votes: {
+      team1: new Set(),
+      team2: new Set()
+    },
+    // ✅ Add drafters info here instead
+    drafters: draftSuccess ? {
+      blue: team1Sorted[0], // Highest Elo blue player
+      red: team2Sorted[0]   // Highest Elo red player
+    } : null
+  };
+
   try {
     console.log("🔄 Starting draft lobby creation...");
     draftLinks = await createDraftLolLobby();
@@ -5436,37 +5461,6 @@ async function makeTeams(channel) {
   // Create embed with assigned drafters and OP.GG links
   let embedDescription = "";
 
-  if (draftSuccess) {
-    // Get highest Elo players for display
-    const team1HighestElo = team1Sorted[0];
-    const team2HighestElo = team2Sorted[0];
-    
-    const team1HighestPlayer = playerData[team1HighestElo];
-    const team2HighestPlayer = playerData[team2HighestElo];
-    
-    const team1HighestDisplay = team1HighestPlayer ? 
-      `${team1HighestPlayer.rank} ${team1HighestPlayer.division || ''} ${team1HighestPlayer.lp}LP` : 
-      "Unknown";
-    const team2HighestDisplay = team2HighestPlayer ? 
-      `${team2HighestPlayer.rank} ${team2HighestPlayer.division || ''} ${team2HighestPlayer.lp}LP` : 
-      "Unknown";
-
-    embedDescription = `**Assigned Drafters:**\n` +
-      `🔵 Blue Team: <@${team1HighestElo}> (Highest Elo)\n` +
-      `🔴 Red Team: <@${team2HighestElo}> (Highest Elo)\n\n` +
-      `**Team OP.GG Links:**\n` +
-      `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
-      `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
-      `**After match, vote with Team Won buttons - 6/10 votes needed**`;
-  } else {
-    // FIX: Include OP.GG links even when draft fails
-    embedDescription = `**Manual Draft Setup Required**\n\nPlease visit [draftlol.dawe.gg](https://draftlol.dawe.gg) and create a draft lobby manually.\n\n` +
-      `**Team OP.GG Links:**\n` +
-      `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
-      `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
-      `**After match, vote with Team Won buttons - 6/10 votes needed**`;
-  }
-
   const matchEmbed = new EmbedBuilder()
     .setTitle("🎮 Match Lobby")
     .setDescription(embedDescription)
@@ -5493,31 +5487,6 @@ async function makeTeams(channel) {
   if (!draftSuccess) {
     messageOptions.content = `❌ Failed to create draft lobby. Players will need to make draft manually.`;
   }
-
-  const matchData = {
-    team1: bestTeam1,
-    team2: bestTeam2,
-    matchChannel,
-    matchCategory,
-    team1VC,
-    team2VC,
-    team1Roles,
-    team2Roles,
-    blue: draftLinks.blue,
-    red: draftLinks.red,
-    spectator: draftLinks.spectator,
-    matchId: matchId,
-    matchMessageId: null,
-    votes: {
-      team1: new Set(),
-      team2: new Set()
-    },
-    // ✅ Add drafters info here instead
-    drafters: draftSuccess ? {
-      blue: team1Sorted[0], // Highest Elo blue player
-      red: team2Sorted[0]   // Highest Elo red player
-    } : null
-  };
 
   // Send the message
   const matchMessage = await matchChannel.send(messageOptions);
