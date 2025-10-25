@@ -2031,9 +2031,13 @@ client.on("interactionCreate", async (interaction) => {
       let message = '';
 
       if (interaction.customId === 'blue_draft') {
-        if (userId !== match.drafters.blue) {
+        // Check if user is staff OR the assigned blue drafter
+        const isStaff = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
+        const isAssignedDrafter = userId === match.drafters.blue;
+        
+        if (!isStaff && !isAssignedDrafter) {
           return interaction.reply({
-            content: `❌ Only the assigned blue team drafter (<@${match.drafters.blue}>) can access this draft link.`,
+            content: `❌ Only staff members or the assigned blue team drafter (<@${match.drafters.blue}>) can access this draft link.`,
             ephemeral: true
           });
         }
@@ -2041,9 +2045,13 @@ client.on("interactionCreate", async (interaction) => {
         message = '🔵 **Blue Team Draft Link**';
       } 
       else if (interaction.customId === 'red_draft') {
-        if (userId !== match.drafters.red) {
+        // Check if user is staff OR the assigned red drafter
+        const isStaff = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
+        const isAssignedDrafter = userId === match.drafters.red;
+        
+        if (!isStaff && !isAssignedDrafter) {
           return interaction.reply({
-            content: `❌ Only the assigned red team drafter (<@${match.drafters.red}>) can access this draft link.`,
+            content: `❌ Only staff members or the assigned red team drafter (<@${match.drafters.red}>) can access this draft link.`,
             ephemeral: true
           });
         }
@@ -2051,14 +2059,8 @@ client.on("interactionCreate", async (interaction) => {
         message = '🔴 **Red Team Draft Link**';
       }
       else if (interaction.customId === 'spectator_draft') {
-        // Spectator link is available to all match participants
-        const isInMatch = match.team1.includes(userId) || match.team2.includes(userId);
-        if (!isInMatch) {
-          return interaction.reply({
-            content: "❌ Only match participants can access the spectator link.",
-            ephemeral: true
-          });
-        }
+        // Spectator link is available to ANYONE in the server
+        // No restrictions - anyone can view the draft
         link = match.spectator;
         message = '👁️ **Spectator Link**';
       }
@@ -2069,6 +2071,7 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
+    // Similarly update the 4fun draft link buttons:
     if (interaction.customId === 'blue_draft_4fun' || interaction.customId === 'red_draft_4fun' || interaction.customId === 'spectator_draft_4fun') {
       const match = matches4fun.get(interaction.channelId);
       if (!match || !match.drafters) {
@@ -2083,9 +2086,13 @@ client.on("interactionCreate", async (interaction) => {
       let message = '';
 
       if (interaction.customId === 'blue_draft_4fun') {
-        if (userId !== match.drafters.blue) {
+        // Check if user is staff OR the assigned blue drafter
+        const isStaff = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
+        const isAssignedDrafter = userId === match.drafters.blue;
+        
+        if (!isStaff && !isAssignedDrafter) {
           return interaction.reply({
-            content: `❌ Only the assigned blue team drafter (<@${match.drafters.blue}>) can access this draft link.`,
+            content: `❌ Only staff members or the assigned blue team drafter (<@${match.drafters.blue}>) can access this draft link.`,
             ephemeral: true
           });
         }
@@ -2093,9 +2100,13 @@ client.on("interactionCreate", async (interaction) => {
         message = '🔵 **Blue Team Draft Link**';
       } 
       else if (interaction.customId === 'red_draft_4fun') {
-        if (userId !== match.drafters.red) {
+        // Check if user is staff OR the assigned red drafter
+        const isStaff = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
+        const isAssignedDrafter = userId === match.drafters.red;
+        
+        if (!isStaff && !isAssignedDrafter) {
           return interaction.reply({
-            content: `❌ Only the assigned red team drafter (<@${match.drafters.red}>) can access this draft link.`,
+            content: `❌ Only staff members or the assigned red team drafter (<@${match.drafters.red}>) can access this draft link.`,
             ephemeral: true
           });
         }
@@ -2103,13 +2114,8 @@ client.on("interactionCreate", async (interaction) => {
         message = '🔴 **Red Team Draft Link**';
       }
       else if (interaction.customId === 'spectator_draft_4fun') {
-        const isInMatch = match.team1.includes(userId) || match.team2.includes(userId);
-        if (!isInMatch) {
-          return interaction.reply({
-            content: "❌ Only 4fun match participants can access the spectator link.",
-            ephemeral: true
-          });
-        }
+        // Spectator link is available to ANYONE in the server
+        // No restrictions - anyone can view the draft
         link = match.spectator;
         message = '👁️ **Spectator Link**';
       }
@@ -2119,6 +2125,7 @@ client.on("interactionCreate", async (interaction) => {
         ephemeral: true
       });
     }
+
 
     // --- Report Win Buttons ---
     if (interaction.customId === 'open_role_selection') {
@@ -5473,7 +5480,9 @@ async function makeTeams(channel) {
       `**Team OP.GG Links:**\n` +
       `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
       `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
-      `**Click your team's draft button above - Only assigned drafters can access links**\n\n` +
+      `**Draft Access:**\n` +
+      `• Team draft links: Assigned drafters + Staff only\n` +
+      `• Spectator link: Anyone in server\n\n` +
       `**After match, vote with Team Won buttons - 6/10 votes needed**`;
   } else {
     embedDescription = `**Team OP.GG Links:**\n` +
@@ -5783,7 +5792,9 @@ async function make4funTeams(channel) {
       `**Team OP.GG Links:**\n` +
       `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
       `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
-      `**Click your team's draft button above - Only assigned drafters can access links**\n\n` +
+      `**Draft Access:**\n` +
+      `• Team draft links: Assigned drafters + Staff only\n` +
+      `• Spectator link: Anyone in server\n\n` +
       `**After match, vote with Team Won buttons - 6/10 votes needed**`;
   }
 
