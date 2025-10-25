@@ -2065,7 +2065,7 @@ client.on("interactionCreate", async (interaction) => {
 
       // Check if we have a valid link (not just the base URL)
       if (!link || link === 'https://draftlol.dawe.gg' || !link.includes('draftlol.dawe.gg/')) {
-        console.error('❌ Invalid draft link retrieved:', link);
+        console.error('❌ Invalid draft link retrieved from match object:', link);
         return interaction.reply({
           content: `❌ Draft link is not available or failed to generate. Please create draft links manually at https://draftlol.dawe.gg`,
           ephemeral: true
@@ -5395,8 +5395,21 @@ async function makeTeams(channel) {
     blue: "https://draftlol.dawe.gg",
     red: "https://draftlol.dawe.gg", 
     spectator: "https://draftlol.dawe.gg",
-    lobby: "https://draftlol.dawe.gg"
   };
+
+  try {
+    console.log("🔄 Starting draft lobby creation...");
+    const generatedLinks = await createDraftLolLobby(); // Store in a different variable
+    draftLinks = generatedLinks; // Then assign to draftLinks
+    draftSuccess = true;
+    console.log(`✅ Draft links generated successfully`);
+    console.log(`🔵 Stored Blue: ${draftLinks.blue}`);
+    console.log(`🔴 Stored Red: ${draftLinks.red}`);
+    console.log(`👁️ Stored Spectator: ${draftLinks.spectator}`);
+  } catch (err) {
+    console.error("❌ Critical error creating draft lobby:", err);
+    draftSuccess = false;
+  }
 
   const matchData = {
     team1: bestTeam1,
@@ -5423,15 +5436,11 @@ async function makeTeams(channel) {
     } : null
   };
 
-  try {
-    console.log("🔄 Starting draft lobby creation...");
-    draftLinks = await createDraftLolLobby();
-    draftSuccess = true;
-    console.log(`✅ Draft links generated successfully`);
-  } catch (err) {
-    console.error("❌ Critical error creating draft lobby:", err);
-    draftSuccess = false;
-  }
+  // Debug: Log what's actually being stored in matchData
+  console.log(`🔍 FINAL MATCH DATA DRAFT LINKS:`);
+  console.log(`🔵 Match Blue: ${matchData.blue}`);
+  console.log(`🔴 Match Red: ${matchData.red}`);
+  console.log(`👁️ Match Spectator: ${matchData.spectator}`);
 
   // Build components based on draft success
   const components = [];
