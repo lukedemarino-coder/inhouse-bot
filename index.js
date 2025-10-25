@@ -5236,7 +5236,7 @@ async function makeTeams(channel) {
     permissionOverwrites: [
       {
         id: guild.id, // @everyone
-        allow: ['ViewChannel'] // CHANGE: Allow everyone to view instead of deny
+        deny: ['ViewChannel'] // CHANGE: Allow everyone to view instead of deny
       }
     ]
   });
@@ -5249,18 +5249,18 @@ async function makeTeams(channel) {
     permissionOverwrites: [
       {
         id: guild.id, // @everyone
-        allow: ['ViewChannel']
+        deny: ['ViewChannel']
       },
       // Allow match participants to view and send messages
       ...bestTeam1.map(playerId => ({
         id: playerId,
         type: 1,
-        allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
+        deny: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
       })),
       ...bestTeam2.map(playerId => ({
         id: playerId,
         type: 1,
-        allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
+        deny: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
       }))
     ]
   });
@@ -5273,13 +5273,13 @@ async function makeTeams(channel) {
     permissionOverwrites: [
       {
         id: guild.id, // @everyone
-        allow: ['ViewChannel', 'Connect'], // Everyone can see the channel
-        deny: ['Speak'], // Mute spectators/other team
+        deny: ['ViewChannel', 'Connect'], // Everyone can see the channel
+        /*deny: ['Speak'], // Mute spectators/other team*/
       },
       ...bestTeam1.map(playerId => ({
         id: playerId,
         type: 1,
-        allow: ['ViewChannel', 'Connect', 'Speak']
+        deny: ['ViewChannel', 'Connect', 'Speak']
       }))
     ]
   });
@@ -5291,13 +5291,13 @@ async function makeTeams(channel) {
     permissionOverwrites: [
       {
         id: guild.id, // @everyone
-        allow: ['ViewChannel', 'Connect'], // Everyone can see the channel
-        deny: ['Speak'], // Mute spectators/other team
+        deny: ['ViewChannel', 'Connect'], // Everyone can see the channel
+        /*deny: ['Speak'], // Mute spectators/other team*/
       },
       ...bestTeam2.map(playerId => ({
         id: playerId,
         type: 1,
-        allow: ['ViewChannel', 'Connect', 'Speak']
+        deny: ['ViewChannel', 'Connect', 'Speak']
       }))
     ]
   });
