@@ -74,6 +74,8 @@ let saveDataTimeout = null;
 let pendingDuoRequests = new Map(); // key: requesterId, value: { targetId, timestamp }
 let voteMessageTimers = new Map(); // key: channelId, value: timer
 let voteMessageFloodCheck = new Map(); // key: channelId, value: { lastMessageCount: number, lastCheck: number }
+// Add this global variable to track the last used category
+let lastUsedCategoryIndex = -1;
 
 // Add block system
 let userBlocks = new Map(); // userId -> Set of blocked user IDs
@@ -161,13 +163,17 @@ function ensurePlayer(id) {
       roles: [],
       currentStreak: 0,
       streakType: "none",
+      // ADD THIS LINE - default to true for DM notifications
+      dmNotifications: true,
       // 4fun stats
       fun: {
         points: 0,
         wins: 0,
         losses: 0,
         matchesPlayed: 0,
-        hiddenMMR: 0 // Will be set based on main rank when they first play
+        hiddenMMR: 0,
+        // Add DM notifications for 4fun queue as well
+        dmNotifications: true
       }
     };
   }
@@ -182,6 +188,8 @@ function ensurePlayer(id) {
   if (player.roles === undefined) player.roles = [];
   if (player.currentStreak === undefined) player.currentStreak = 0;
   if (player.streakType === undefined) player.streakType = "none";
+  // ADD THIS LINE - ensure dmNotifications exists
+  if (player.dmNotifications === undefined) player.dmNotifications = true;
   
   // Ensure 4fun stats exist
   if (!player.fun) {
@@ -190,9 +198,13 @@ function ensurePlayer(id) {
       wins: 0,
       losses: 0,
       matchesPlayed: 0,
-      hiddenMMR: 0
+      hiddenMMR: 0,
+      dmNotifications: true
     };
   }
+  
+  // Ensure 4fun dmNotifications exists
+  if (player.fun.dmNotifications === undefined) player.fun.dmNotifications = true;
   
   return playerData[id];
 }
@@ -751,7 +763,7 @@ function getTimeoutInfo(userId) {
   };
 }
 
-// ---------------- LEADERBOARD ----------------
+// ---------------- LEADERBOARD WITH EPHEMERAL BUTTONS ----------------
 async function updateLeaderboardChannel(guild) {
   const channelName = "leaderboard";
   let lbChannel = guild.channels.cache.find(c => c.name === channelName && c.type === 0);
@@ -759,55 +771,77 @@ async function updateLeaderboardChannel(guild) {
     lbChannel = await guild.channels.create({ name: channelName, type: 0 });
   }
 
-  // Try to reuse old leaderboard messages
-  if (!leaderboardMessage || !leaderboardMessage.length) {
-    const fetched = await lbChannel.messages.fetch({ limit: 20 });
-    const existing = fetched.filter(m => m.author.id === client.user.id && m.embeds.length > 0);
-    if (existing.size > 0) {
-      leaderboardMessage = Array.from(existing.values()).sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-      console.log(`Found ${leaderboardMessage.length} existing leaderboard messages.`);
-    } else {
-      leaderboardMessage = [];
-    }
+  // Clear existing messages and create fresh static leaderboard
+  const messages = await lbChannel.messages.fetch();
+  if (messages.size > 0) {
+    await lbChannel.bulkDelete(messages);
   }
 
-  // Calculate average rank of all players who have played games
-  let totalIHP = 0;
-  let playerCount = 0;
+  // Load match history to get all players who have played matches
+  const matchHistory = await loadMatchHistory();
+  const playersInMatchHistory = new Set();
   
-  Object.keys(playerData).forEach(id => {
-    if (id.startsWith('_')) return false;
-    
-    const p = playerData[id];
-    const hasPlayedGames = (p.wins + p.losses) > 0;
-    
-    if (p && typeof p === 'object' && p.rank !== undefined && hasPlayedGames) {
-      totalIHP += getIHP(p);
-      playerCount++;
+  // Add all players from all matches in history (non-voided matches only)
+  matchHistory.forEach(match => {
+    if (!match.voided) {
+      match.team1.forEach(id => playersInMatchHistory.add(id));
+      match.team2.forEach(id => playersInMatchHistory.add(id));
     }
   });
 
-  // Calculate average rank - ROUND IHP to avoid decimal LP
-  const averageIHP = playerCount > 0 ? Math.round(totalIHP / playerCount) : 0;
-  const averageRank = IHPToRank(averageIHP);
-  const averageRankDisplay = formatRankDisplay(averageRank.rank, averageRank.division, averageRank.lp);
+  // Calculate average rank for players who have played in matches
+  let averageRankDisplay = "No matches played yet";
+  let totalMatches = matchHistory.filter(match => !match.voided).length;
+  let uniquePlayers = playersInMatchHistory.size;
+  
+  if (playersInMatchHistory.size > 0) {
+    let totalIHP = 0;
+    playersInMatchHistory.forEach(playerId => {
+      const player = ensurePlayer(playerId);
+      totalIHP += getIHP(player);
+    });
+    
+    const averageIHP = Math.round(totalIHP / playersInMatchHistory.size);
+    const averageRank = IHPToRank(averageIHP);
+    averageRankDisplay = formatRankDisplay(averageRank.rank, averageRank.division, averageRank.lp);
+  }
 
-  // Build leaderboard sorted by Elo/IHP - FILTER OUT SYSTEM KEYS AND PLAYERS WITH NO GAMES
+  // Create a single button to open personal leaderboard
+  const openButtonRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("open_leaderboard")
+      .setLabel("📊 Open Leaderboard")
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji("📊")
+  );
+
+  const welcomeEmbed = new EmbedBuilder()
+    .setTitle("🏆 Leaderboard")
+    .setDescription(`Click the button below to open your personal interactive leaderboard!\n\nYou can sort by different categories.\n\n**Total Matches Played: ${totalMatches}**\n**Unique Players: ${uniquePlayers}**\n**Average Rank Across All Matches: ${averageRankDisplay}**`)
+    .setColor(0xffd700)
+    .setTimestamp();
+
+  leaderboardMessage = await lbChannel.send({ 
+    embeds: [welcomeEmbed], 
+    components: [openButtonRow] 
+  });
+}
+
+// Function to generate leaderboard embed based on sort type
+async function generateLeaderboardEmbed(sortType = "rank") {
+  // Filter out system keys and players with no games
   const players = Object.keys(playerData)
     .filter(id => {
-      // Exclude system keys that start with underscore
       if (id.startsWith('_')) return false;
-      
-      // Ensure it's a valid player object with required properties
       const p = playerData[id];
       const hasPlayedGames = (p.wins + p.losses) > 0;
-      
       return p && typeof p === 'object' && p.rank !== undefined && hasPlayedGames;
     })
     .map(id => {
       const p = playerData[id];
       const gp = p.wins + p.losses;
       const wr = gp ? ((p.wins / gp) * 100).toFixed(1) : "0.0";
+      const netWins = p.wins - p.losses;
       return {
         id,
         rank: p.rank,
@@ -817,76 +851,123 @@ async function updateLeaderboardChannel(guild) {
         wins: p.wins,
         losses: p.losses,
         wr,
-        gp
+        gp,
+        netWins
       };
-    })
-    .sort((a, b) => b.elo - a.elo); // highest Elo first
+    });
 
-  // Split into chunks of 25
-  const chunkSize = 25;
-  const embeds = [];
-  
-  // If no players, show empty leaderboard
-  if (players.length === 0) {
-    const embed = new EmbedBuilder()
-      .setTitle("🏆 Leaderboard")
-      .setDescription("No players have completed any games yet. Play your first match to appear on the leaderboard!")
-      .setColor(0xffd700)
-      .setTimestamp();
-    embeds.push(embed);
-  } else {
-    for (let i = 0; i < players.length; i += chunkSize) {
-      const chunk = players.slice(i, i + chunkSize);
-      const description = chunk
-        .map((p, idx) => {
-          const rankDiv = p.division ? `${p.rank} ${p.division}` : p.rank;
-          const line1 = `#${i + idx + 1} • ${rankDiv} ${p.lp} LP`;
-          const line2 = `<@${p.id}> | Elo: ${p.elo} | W: ${p.wins} | L: ${p.losses} | WR: ${p.wr}% | GP: ${p.gp}`;
-          return `${line1}\n${line2}`;
-        })
-        .join("\n\n");
+  // Sort based on the selected type
+  let sortedPlayers = [];
+  let title = "🏆 Leaderboard";
+  let description = "";
 
-      const embed = new EmbedBuilder()
-        .setTitle(i === 0 ? "🏆 Leaderboard" : `Leaderboard (cont.)`)
-        .setDescription(
-          i === 0 
-            ? `**Average Rank in All Matches Played: ${averageRankDisplay}**\n\n${description}`
-            : description
-        )
-        .setColor(0xffd700)
-        .setTimestamp();
-      embeds.push(embed);
-    }
+  switch (sortType) {
+    case "wins":
+      sortedPlayers = players.sort((a, b) => b.wins - a.wins);
+      title = "🏆 Most Wins";
+      description = "**Sorted by: Most Wins**\n\n";
+      break;
+    
+    case "losses":
+      sortedPlayers = players.sort((a, b) => b.losses - a.losses);
+      title = "💀 Most Losses";
+      description = "**Sorted by: Most Losses**\n\n";
+      break;
+    
+    case "winrate":
+      sortedPlayers = players.sort((a, b) => {
+        const aWR = a.gp ? (a.wins / a.gp) : 0;
+        const bWR = b.gp ? (b.wins / b.gp) : 0;
+        return bWR - aWR;
+      }).filter(p => p.gp >= 3); // Only show players with 3+ games for meaningful WR
+      title = "📊 Highest Win Rate";
+      description = "**Sorted by: Win Rate %** (min. 3 games)\n\n";
+      break;
+    
+    case "rank":
+      sortedPlayers = players.sort((a, b) => b.elo - a.elo);
+      title = "⭐ Highest Rank";
+      description = "**Sorted by: Rank (ELO)**\n\n";
+      break;
+    
+    case "matches":
+      sortedPlayers = players.sort((a, b) => b.gp - a.gp);
+      title = "🎮 Most Matches Played";
+      description = "**Sorted by: Games Played**\n\n";
+      break;
+    
+    case "netwins":
+      sortedPlayers = players.sort((a, b) => b.netWins - a.netWins);
+      title = "📈 Highest Net Wins";
+      description = "**Sorted by: Net Wins (Wins - Losses)**\n\n";
+      break;
+    
+    default:
+      sortedPlayers = players.sort((a, b) => b.elo - a.elo);
+      title = "🏆 Leaderboard";
+      description = "**Sorted by: Rank (ELO)**\n\n";
   }
 
-  // EDIT existing messages if they exist
-  if (leaderboardMessage && leaderboardMessage.length) {
-    for (let i = 0; i < embeds.length; i++) {
-      const embed = embeds[i];
-      if (leaderboardMessage[i]) {
-        // Edit existing message
-        await leaderboardMessage[i].edit({ embeds: [embed] }).catch(() => {});
-      } else {
-        // Add new message if needed
-        const msg = await lbChannel.send({ embeds: [embed] });
-        leaderboardMessage.push(msg);
-      }
-    }
-    // Delete any extra old messages
-    if (leaderboardMessage.length > embeds.length) {
-      for (let i = embeds.length; i < leaderboardMessage.length; i++) {
-        await leaderboardMessage[i].delete().catch(() => {});
-      }
-      leaderboardMessage = leaderboardMessage.slice(0, embeds.length);
-    }
-  } else {
-    // No previous messages → send new ones
-    leaderboardMessage = [];
-    for (const embed of embeds) {
-      const msg = await lbChannel.send({ embeds: [embed] });
-      leaderboardMessage.push(msg);
-    }
+  // Calculate average rank for rank view
+  if (sortType === "rank") {
+    let totalIHP = 0;
+    let playerCount = 0;
+    
+    players.forEach(p => {
+      totalIHP += p.elo;
+      playerCount++;
+    });
+
+    const averageIHP = playerCount > 0 ? Math.round(totalIHP / playerCount) : 0;
+    const averageRank = IHPToRank(averageIHP);
+    const averageRankDisplay = formatRankDisplay(averageRank.rank, averageRank.division, averageRank.lp);
+    description += `**Average Rank: ${averageRankDisplay}**\n\n`;
   }
+
+  // Build the leaderboard display
+  if (sortedPlayers.length === 0) {
+    description += "No players match the current criteria.";
+  } else {
+    const top20 = sortedPlayers.slice(0, 20);
+    
+    description += top20
+      .map((p, idx) => {
+        const rankDiv = p.division ? `${p.rank} ${p.division}` : p.rank;
+        
+        switch (sortType) {
+          case "wins":
+            return `#${idx + 1} • <@${p.id}> | ${p.wins} wins | ${p.losses} losses | ${p.wr}% WR | ${p.gp} games`;
+          
+          case "losses":
+            return `#${idx + 1} • <@${p.id}> | ${p.losses} losses | ${p.wins} wins | ${p.wr}% WR | ${p.gp} games`;
+          
+          case "winrate":
+            return `#${idx + 1} • <@${p.id}> | ${p.wr}% WR | ${p.wins}W/${p.losses}L | ${p.gp} games`;
+          
+          case "rank":
+            return `#${idx + 1} • <@${p.id}> | ${rankDiv} ${p.lp} LP | ${p.wins}W/${p.losses}L | ${p.wr}% WR`;
+          
+          case "matches":
+            return `#${idx + 1} • <@${p.id}> | ${p.gp} games | ${p.wins}W/${p.losses}L | ${p.wr}% WR`;
+          
+          case "netwins":
+            return `#${idx + 1} • <@${p.id}> | ${p.netWins > 0 ? '+' : ''}${p.netWins} net wins | ${p.wins}W/${p.losses}L | ${p.wr}% WR`;
+          
+          default:
+            return `#${idx + 1} • <@${p.id}> | ${rankDiv} ${p.lp} LP | ${p.wins}W/${p.losses}L | ${p.wr}% WR`;
+        }
+      })
+      .join("\n");
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle(title)
+    .setDescription(description)
+    .setColor(0xffd700)
+    .setTimestamp()
+    .setFooter({ text: `Showing ${Math.min(sortedPlayers.length, 20)} of ${sortedPlayers.length} players` });
+
+  return embed;
 }
 
 async function update4funLeaderboardChannel(guild) {
@@ -932,7 +1013,7 @@ async function update4funLeaderboardChannel(guild) {
     })
     .sort((a, b) => b.points - a.points); // highest 4fun points first
 
-  const chunkSize = 25;
+  const chunkSize = 20;
   const embeds = [];
   
   if (players.length === 0) {
@@ -1010,6 +1091,12 @@ async function startReadyCheck(channel) {
   let pendingUpdate = false;
   let updateTimeout = null;
   const DEBOUNCE_DELAY = 300; // 300ms debounce
+
+  // Send DM notifications to all players in queue
+  console.log("🔔 Sending ready check DM notifications...");
+  for (const playerId of participants) {
+    await sendReadyCheckDM(playerId, false);
+  }
 
   // Create the initial embed with Discord timestamp - REMOVED FOOTER
   const createReadyCheckEmbed = () => {
@@ -1243,6 +1330,12 @@ async function start4funReadyCheck(channel) {
   let pendingUpdate = false;
   let updateTimeout = null;
   const DEBOUNCE_DELAY = 300;
+
+  // Send DM notifications to all players in queue
+  console.log("🔔 Sending ready check DM notifications...");
+  for (const playerId of participants) {
+    await sendReadyCheckDM(playerId, false);
+  }
 
   const createReadyCheckEmbed = () => {
     const readyArray = Array.from(ready);
@@ -1681,14 +1774,26 @@ async function postQueueMessage(channel) {
   }
 
   // Otherwise, create a new queue message
-  const row = new ActionRowBuilder().addComponents(
+  const joinRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("join").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("leave").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId("opgg").setLabel("🌐 Multi OP.GG").setStyle(ButtonStyle.Primary)
   );
 
+  // DM toggle button
+  const dmToggleRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("toggle_dm")
+      .setLabel("Toggle DM Notifications")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("🔔")
+  );
+
   const embed = buildQueueEmbed();
-  queueMessage = await channel.send({ embeds: [embed], components: [row] });
+  queueMessage = await channel.send({ 
+    embeds: [embed], 
+    components: [joinRow, dmToggleRow] // Include both rows
+  });
 }
 
 async function post4funQueueMessage(channel) {
@@ -1710,14 +1815,26 @@ async function post4funQueueMessage(channel) {
   }
 
   // Create new message if none exists
-  const row = new ActionRowBuilder().addComponents(
+  const joinRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("join4fun").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("leave4fun").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId("duo4fun").setLabel("🤝 Request Duo").setStyle(ButtonStyle.Primary)
   );
 
+  // DM toggle for 4fun
+  const dmToggleRow4fun = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("toggle_dm_4fun")
+      .setLabel("Toggle DM Notifications")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("🔔")
+  );
+
   const embed = build4funQueueEmbed();
-  queueMessage4fun = await channel.send({ embeds: [embed], components: [row] });
+  queueMessage4fun = await channel.send({ 
+    embeds: [embed], 
+    components: [joinRow, dmToggleRow4fun] 
+  });
   return queueMessage4fun;
 }
 
@@ -1731,14 +1848,26 @@ async function update4funQueueMessage() {
   }
 
   update4funQueueTimeout = setTimeout(async () => {
-    const row = new ActionRowBuilder().addComponents(
+    const joinRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("join4fun").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("leave4fun").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("duo4fun").setLabel("🤝 Request Duo").setStyle(ButtonStyle.Primary) // ADD THIS
+      new ButtonBuilder().setCustomId("duo4fun").setLabel("🤝 Request Duo").setStyle(ButtonStyle.Primary)
+    );
+
+    // DM toggle for 4fun
+    const dmToggleRow4fun = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("toggle_dm_4fun")
+        .setLabel("Toggle DM Notifications")  // Changed from "🔔 4Fun DM Notifications"
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji("🔔")
     );
 
     const embed = build4funQueueEmbed();
-    await queueMessage4fun.edit({ embeds: [embed], components: [row] });
+    await queueMessage4fun.edit({ 
+      embeds: [embed], 
+      components: [joinRow, dmToggleRow4fun] 
+    });
   }, 250);
 }
 
@@ -1772,15 +1901,29 @@ async function updateQueueMessage() {
       return `https://www.op.gg/lol/multisearch/na?summoners=${summoners.join("%2C")}`;
     };
 
-    const row = new ActionRowBuilder().addComponents(
+    const joinRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("join").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("leave").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setLabel("🌐 Multi OP.GG").setStyle(ButtonStyle.Link).setURL(getMultiOPGG())
     );
 
+    // Update DM toggle button based on user's setting
+    // For the queue message, we'll show the current user's setting when they interact
+    // The default label will be "DM Notifications"
+    const dmToggleRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("toggle_dm")
+        .setLabel("Toggle DM Notifications")
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji("🔔")
+    );
+
     const embed = buildQueueEmbed();
-    await queueMessage.edit({ embeds: [embed], components: [row] });
-  }, 250); // Wait 250ms after last change
+    await queueMessage.edit({ 
+      embeds: [embed], 
+      components: [joinRow, dmToggleRow] // Include both rows
+    });
+  }, 250);
 }
 
 // Helper function to update match message with vote display
@@ -1805,6 +1948,39 @@ async function updateMatchVoteDisplay(channel, match) {
     await matchMessage.edit({ embeds: [updatedEmbed] });
   } catch (error) {
     console.error("Failed to update match vote display:", error);
+  }
+}
+
+// ---------------- DM NOTIFICATION FUNCTION ----------------
+async function sendReadyCheckDM(userId, is4fun = false) {
+  try {
+    const player = ensurePlayer(userId);
+    const shouldSendDM = is4fun ? player.fun.dmNotifications : player.dmNotifications;
+    
+    if (!shouldSendDM) {
+      console.log(`🔕 DM notifications disabled for user ${userId}, skipping DM`);
+      return;
+    }
+
+    const user = await client.users.fetch(userId);
+    const queueType = is4fun ? "4Fun" : "Ranked";
+    
+    const dmEmbed = new EmbedBuilder()
+      .setTitle("⚔️ Ready Check Alert!")
+      .setDescription(`A ready check has started for the **${queueType}** queue!\n\nPlease check <#${queueMessage.channel.id}> to respond.`)
+      .setColor(0x00ff00)
+      .setTimestamp()
+      .setFooter({ text: "You can disable these notifications with the button in queue" });
+
+    await user.send({ embeds: [dmEmbed] });
+    console.log(`✅ Sent ready check DM to user ${userId}`);
+  } catch (error) {
+    // If user has DMs disabled or other error, just log it
+    if (error.code === 50007) { // Cannot send messages to this user
+      console.log(`❌ Cannot send DM to user ${userId} (DMs disabled)`);
+    } else {
+      console.error(`Error sending DM to user ${userId}:`, error);
+    }
   }
 }
 
@@ -2008,6 +2184,60 @@ client.on("interactionCreate", async (interaction) => {
       return interaction.reply({
         content: "✅ Opening draft link...",
         ephemeral: true
+      });
+    }
+
+    // Handle opening the ephemeral leaderboard
+    if (interaction.customId === "open_leaderboard") {
+      const messageData = await sendEphemeralLeaderboard(interaction, "rank");
+      await interaction.reply(messageData);
+      return;
+    }
+    
+    // Handle sorting buttons within ephemeral messages
+    else if (interaction.customId.startsWith("leaderboard_")) {
+      // Extract sort type from the custom ID
+      const sortType = interaction.customId.replace("leaderboard_", "");
+      
+      // Generate updated embed and components
+      const updatedMessage = await sendEphemeralLeaderboard(interaction, sortType);
+      
+      // Update the ephemeral message
+      await interaction.update(updatedMessage);
+      return;
+    }
+
+    // --- DM Toggle Button ---
+    if (interaction.customId === "toggle_dm") {
+      // Defer the interaction first
+      await interaction.deferReply({ ephemeral: true });
+      
+      const player = ensurePlayer(interaction.user.id);
+      
+      // Toggle the DM notification setting
+      player.dmNotifications = !player.dmNotifications;
+      saveData();
+      
+      // Now use editReply since we deferred
+      await interaction.editReply({
+        content: `DM notifications are now **${player.dmNotifications ? "ENABLED" : "DISABLED"}** for ranked queue.`
+      });
+    }
+
+    // --- 4Fun DM Toggle Button ---
+    if (interaction.customId === "toggle_dm_4fun") {
+      // Defer the interaction first
+      await interaction.deferReply({ ephemeral: true });
+      
+      const player = ensurePlayer(interaction.user.id);
+      
+      // Toggle the 4fun DM notification setting
+      player.fun.dmNotifications = !player.fun.dmNotifications;
+      saveData();
+      
+      // Now use editReply since we deferred
+      await interaction.editReply({
+        content: `DM notifications are now **${player.fun.dmNotifications ? "ENABLED" : "DISABLED"}** for 4fun queue.`
       });
     }
 
@@ -2860,13 +3090,36 @@ client.on("messageCreate", async (message) => {
 
         let rank, division;
         const tierParts = tierText.trim().split(/\s+/);
+        
+        // FIXED: Handle Master+ ranks properly
         if (tierParts.length === 2) {
           rank = tierParts[0].charAt(0).toUpperCase() + tierParts[0].slice(1).toLowerCase();
           const divText = tierParts[1].toUpperCase();
-          const romanToNumber = { IV: 4, III: 3, II: 2, I: 1 };
-          division = !isNaN(parseInt(divText)) ? parseInt(divText) : romanToNumber[divText] || 4;
+          
+          // For Master+, check if we need to promote based on LP thresholds
+          if (["Master", "Grandmaster", "Challenger"].includes(rank)) {
+            // Apply promotion logic for Master+ tiers
+            if (rank === "Master" && lp >= 500) {
+              rank = "Grandmaster";
+            } else if (rank === "Grandmaster" && lp >= 900) {
+              rank = "Challenger";
+            }
+            division = null; // Master+ tiers don't have divisions
+          } else {
+            // For tiers below Master, use normal division logic
+            const romanToNumber = { IV: 4, III: 3, II: 2, I: 1 };
+            division = !isNaN(parseInt(divText)) ? parseInt(divText) : romanToNumber[divText] || 4;
+          }
         } else {
+          // Single word rank (Master+)
           rank = tierParts[0].charAt(0).toUpperCase() + tierParts[0].slice(1).toLowerCase();
+          
+          // Apply promotion logic for Master+ tiers
+          if (rank === "Master" && lp >= 500) {
+            rank = "Grandmaster";
+          } else if (rank === "Grandmaster" && lp >= 900) {
+            rank = "Challenger";
+          }
           division = null;
         }
 
@@ -2878,7 +3131,10 @@ client.on("messageCreate", async (message) => {
         playerData[userId].IHP = getIHP(playerData[userId]);
         saveData();
         await updateLeaderboardChannel(message.guild);
-        await message.reply(`✅ Registered ${message.author.username} as **${tierText} ${lp} LP**`);
+        
+        // Show the actual registered rank (after potential promotion)
+        const registeredRankDisplay = formatRankDisplay(rank, division, lp);
+        await message.reply(`✅ Registered ${message.author.username} as **${registeredRankDisplay}**`);
 
       } catch (err) {
         console.error(err);
@@ -4202,13 +4458,6 @@ client.on("messageCreate", async (message) => {
           console.log(`Could not delete match channel: ${err.message}`);
         }));
       }
-      
-      // Delete the category LAST (after all children are deleted)
-      if (match.matchCategory) {
-        deletePromises.push(match.matchCategory.delete().catch(err => {
-          console.log(`Could not delete match category: ${err.message}`);
-        }));
-      }
 
       // Wait for all deletions to complete
       await Promise.allSettled(deletePromises);
@@ -4568,6 +4817,16 @@ client.on("messageCreate", async (message) => {
           rank = tierParts[0].charAt(0).toUpperCase() + tierParts[0].slice(1).toLowerCase();
           division = null;
         }
+      }
+
+      // Apply promotion logic for Master+ tiers
+      if (["Master", "Grandmaster", "Challenger"].includes(rank)) {
+        if (rank === "Master" && lp >= 500) {
+          rank = "Grandmaster";
+        } else if (rank === "Grandmaster" && lp >= 900) {
+          rank = "Challenger";
+        }
+        division = null; // Master+ tiers don't have divisions
       }
       
       ensurePlayer(userId);
@@ -5261,28 +5520,49 @@ async function makeTeams(channel) {
   const team2TopElo = team2Sorted[0];
 
   // ---------------- CREATE SEPARATE MATCH CATEGORY FOR EACH MATCH ----------------
+  // Look for all preset match categories "Match 1" - "Match 10"
   const guild = channel.guild;
-  
-  const matchId = await getNextMatchId();
-  const matchCategoryName = `Match ${matchId}`; // Simpler name without timestamp
-  
-  // Create a dedicated category for this match
-  const matchCategory = await guild.channels.create({ 
-    name: matchCategoryName, 
-    type: 4, // Category type
-    permissionOverwrites: [
-      {
-        id: guild.id, // @everyone
-        allow: ['ViewChannel'] // CHANGE: Allow everyone to view instead of deny
-      }
-    ]
-  });
+  // Force categories into correct 1-10 order regardless of Discord's order
+const presetCategories = [];
+for (let i = 1; i <= 10; i++) {
+  const category = guild.channels.cache.find(
+    channel => channel.name === `Match ${i}` && channel.type === 4
+  );
+  if (category) {
+    presetCategories.push({
+      category,
+      number: i
+    });
+  } else {
+    console.log(`❌ Missing category: Match ${i}`);
+  }
+}
 
-  // Create match text channel - MAKE PRIVATE
+if (presetCategories.length === 0) {
+  return channel.send("❌ No preset match categories found (Match 1 - Match 10). Please create them first.");
+}
+
+// Log found categories for debugging
+console.log(`📁 Found categories: ${presetCategories.map(c => `Match ${c.number}`).join(', ')}`);
+
+  // ROUND-ROBIN CATEGORY SELECTION - Always use next category in sequence
+  lastUsedCategoryIndex = (lastUsedCategoryIndex + 1) % presetCategories.length;
+  selectedCategory = presetCategories[lastUsedCategoryIndex].category;
+  selectedCategoryNumber = presetCategories[lastUsedCategoryIndex].number;
+
+  console.log(`✅ Selected Match ${selectedCategoryNumber} for new match (round-robin index: ${lastUsedCategoryIndex})`);
+
+  const matchId = await getNextMatchId();
+
+  // Rename the category to the match ID
+  await selectedCategory.setName(matchId.toString());
+  console.log(`✅ Renamed category "Match ${selectedCategoryNumber}" to match ID: ${matchId}`);
+
+  // Create match text channel inside the selected category
   const matchChannel = await guild.channels.create({ 
-    name: "match-lobby", 
+    name: `match-${matchId}`, 
     type: 0, 
-    parent: matchCategory.id,
+    parent: selectedCategory.id,
     permissionOverwrites: [
       {
         id: guild.id, // @everyone
@@ -5302,16 +5582,16 @@ async function makeTeams(channel) {
     ]
   });
 
-  // Create team voice channels with proper permissions - UPDATED VERSION
+  // Create team voice channels inside the selected category
   const team1VC = await guild.channels.create({ 
-    name: "🔵 Team 1 (Blue)", 
+    name: `Team 1`,
     type: 2, 
-    parent: matchCategory.id,
+    parent: selectedCategory.id,
     permissionOverwrites: [
       {
         id: guild.id, // @everyone
         allow: ['ViewChannel', 'Connect'], // Everyone can see the channel
-        deny: ['Speak'], // Mute spectators/other team*/
+        deny: ['Speak'], // Mute spectators/other team
       },
       ...bestTeam1.map(playerId => ({
         id: playerId,
@@ -5322,14 +5602,14 @@ async function makeTeams(channel) {
   });
 
   const team2VC = await guild.channels.create({ 
-    name: "🔴 Team 2 (Red)", 
+    name: `Team 2`,
     type: 2, 
-    parent: matchCategory.id,
+    parent: selectedCategory.id,
     permissionOverwrites: [
       {
         id: guild.id, // @everyone
         allow: ['ViewChannel', 'Connect'], // Everyone can see the channel
-        deny: ['Speak'], // Mute spectators/other team*/
+        deny: ['Speak'], // Mute spectators/other team
       },
       ...bestTeam2.map(playerId => ({
         id: playerId,
@@ -5411,11 +5691,11 @@ async function makeTeams(channel) {
     draftSuccess = false;
   }
 
+  // Store the original category name in match data so we can restore it later
   const matchData = {
     team1: bestTeam1,
     team2: bestTeam2,
     matchChannel,
-    matchCategory,
     team1VC,
     team2VC,
     team1Roles,
@@ -5429,11 +5709,11 @@ async function makeTeams(channel) {
       team1: new Set(),
       team2: new Set()
     },
-    // ✅ Add drafters info here instead
     drafters: draftSuccess ? {
-      blue: team1Sorted[0], // Highest Elo blue player
-      red: team2Sorted[0]   // Highest Elo red player
-    } : null
+      blue: team1Sorted[0],
+      red: team2Sorted[0]
+    } : null,
+    originalCategoryName: `Match ${selectedCategoryNumber}` // Store original name for restoration
   };
 
   // Debug: Log what's actually being stored in matchData
@@ -5629,24 +5909,46 @@ async function make4funTeams(channel) {
   console.log(`🔵 Team 1 Avg MMR: ${bestAvg1.toFixed(2)}, 🔴 Team 2 Avg MMR: ${bestAvg2.toFixed(2)}`);
 
   const guild = channel.guild;
+
+  // Look for all preset match categories "Match 1" - "Match 10"
+  const presetCategories = [];
+  for (let i = 1; i <= 10; i++) {
+    const category = guild.channels.cache.find(
+      channel => channel.name === `Match ${i}` && channel.type === 4
+    );
+    if (category) {
+      presetCategories.push({
+        category,
+        number: i
+      });
+    }
+  }
+
+  if (presetCategories.length === 0) {
+    return channel.send("❌ No preset match categories found (Match 1 - Match 10). Please create them first.");
+  }
+
+  // Sort categories by number to ensure proper cycling
+  presetCategories.sort((a, b) => a.number - b.number);
+
+  // ROUND-ROBIN CATEGORY SELECTION - Always use next category in sequence
+  lastUsedCategoryIndex = (lastUsedCategoryIndex + 1) % presetCategories.length;
+  selectedCategory = presetCategories[lastUsedCategoryIndex].category;
+  selectedCategoryNumber = presetCategories[lastUsedCategoryIndex].number;
+
+  console.log(`✅ Selected Match ${selectedCategoryNumber} for new 4fun match (round-robin index: ${lastUsedCategoryIndex})`);
+
   const matchId = await getNextMatchId();
-  const matchCategoryName = `4Fun Match ${matchId}`;
 
-  const matchCategory = await guild.channels.create({ 
-    name: matchCategoryName, 
-    type: 4,
-    permissionOverwrites: [
-      {
-        id: guild.id,
-        allow: ['ViewChannel']
-      }
-    ]
-  });
+  // Rename the category to the match ID
+  await selectedCategory.setName(matchId.toString());
+  console.log(`✅ Renamed category "Match ${selectedCategoryNumber}" to 4fun match ID: ${matchId}`);
 
+  // Create 4fun match text channel inside the selected category
   const matchChannel = await guild.channels.create({ 
-    name: "4fun-match-lobby", 
+    name: `4fun-match-${matchId}`, 
     type: 0, 
-    parent: matchCategory.id,
+    parent: selectedCategory.id,
     permissionOverwrites: [
       {
         id: guild.id,
@@ -5654,48 +5956,49 @@ async function make4funTeams(channel) {
       ...bestTeam1.map(playerId => ({
         id: playerId,
         type: 1,
-        allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
+        deny: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
       })),
       ...bestTeam2.map(playerId => ({
         id: playerId,
         type: 1,
-        allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
+        deny: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
       }))
     ]
   });
 
+  // Create 4fun team voice channels inside the selected category
   const team1VC = await guild.channels.create({ 
-    name: "🔵 Team 1 (Blue)", 
+    name: `Team 1`,
     type: 2, 
-    parent: matchCategory.id,
+    parent: selectedCategory.id,
     permissionOverwrites: [
       {
         id: guild.id,
-        allow: ['ViewChannel', 'Connect'],
-        deny: ['Speak'],
+        deny: ['ViewChannel', 'Connect'],
+        allow: ['Speak'],
       },
       ...bestTeam1.map(playerId => ({
         id: playerId,
         type: 1,
-        allow: ['ViewChannel', 'Connect', 'Speak']
+        deny: ['ViewChannel', 'Connect', 'Speak']
       }))
     ]
   });
 
   const team2VC = await guild.channels.create({ 
-    name: "🔴 Team 2 (Red)", 
+    name: `Team 2`,
     type: 2, 
-    parent: matchCategory.id,
+    parent: selectedCategory.id,
     permissionOverwrites: [
       {
         id: guild.id,
-        allow: ['ViewChannel', 'Connect'],
-        deny: ['Speak'],
+        deny: ['ViewChannel', 'Connect'],
+        allow: ['Speak'],
       },
       ...bestTeam2.map(playerId => ({
         id: playerId,
         type: 1,
-        allow: ['ViewChannel', 'Connect', 'Speak']
+        deny: ['ViewChannel', 'Connect', 'Speak']
       }))
     ]
   });
@@ -5738,7 +6041,6 @@ async function make4funTeams(channel) {
     blue: "https://draftlol.dawe.gg",
     red: "https://draftlol.dawe.gg", 
     spectator: "https://draftlol.dawe.gg",
-    lobby: "https://draftlol.dawe.gg"
   };
 
   try {
@@ -5750,6 +6052,29 @@ async function make4funTeams(channel) {
     console.error("❌ Critical error creating 4fun draft lobby:", err);
     draftSuccess = false;
   }
+
+  // Store the original category name in match data so we can restore it later
+  const matchData = {
+    team1: bestTeam1,
+    team2: bestTeam2,
+    matchChannel,
+    team1VC,
+    team2VC,
+    blue: draftLinks.blue,
+    red: draftLinks.red,
+    spectator: draftLinks.spectator,
+    matchId: matchId,
+    matchMessageId: null,
+    votes: {
+      team1: new Set(),
+      team2: new Set()
+    },
+    drafters: draftSuccess ? {
+      blue: team1Sorted[0],
+      red: team2Sorted[0]
+    } : null,
+    originalCategoryName: `Match ${selectedCategoryNumber}` // Store original name for restoration
+  };
 
   const components = [];
 
@@ -5850,21 +6175,6 @@ async function make4funTeams(channel) {
     messageOptions.content = `❌ Failed to create draft lobby. Players will need to make draft at https://draftlol.dawe.gg/ manually.`;
   }
 
-  const matchData = {
-    team1: bestTeam1,
-    team2: bestTeam2,
-    matchChannel,
-    matchCategory,
-    team1VC,
-    team2VC,
-    matchId: matchId,
-    matchMessageId: null,
-    votes: {
-      team1: new Set(),
-      team2: new Set()
-    }
-  };
-
   const matchMessage = await matchChannel.send(messageOptions);
   matchData.matchMessageId = matchMessage.id;
 
@@ -5877,7 +6187,6 @@ async function make4funTeams(channel) {
 }
 
 // ---------------- END MATCH ----------------
-// ---------------- END MATCH ----------------
 async function endMatch(channel, winner, isVoided = false) {
   // Clean up vote timers
   cleanupVoteTimers(channel.id);
@@ -5887,7 +6196,7 @@ async function endMatch(channel, winner, isVoided = false) {
     return channel.send("❌ No active match found in this channel.");
   }
 
-  const { team1, team2, matchChannel, matchCategory, team1VC, team2VC, matchId } = match;
+  const { team1, team2, matchChannel, team1VC, team2VC, matchId, originalCategoryName } = match;
   const guild = channel.guild;
 
   let historyChannel = guild.channels.cache.find(c => c.name === "match-history" && c.type === 0);
@@ -6233,6 +6542,17 @@ async function endMatch(channel, winner, isVoided = false) {
   // ✅ Send confirmation message BEFORE deleting channels - NOW INCLUDES MATCH ID
   await channel.send(`✅ Match ${matchId} ended! ${winner === "1" ? "🟦 Team 1 (Blue)" : "🟥 Team 2 (Red)"} wins!`);
 
+  // Restore the original category name
+  try {
+    const category = matchChannel.parent;
+    if (category && category.type === 4) {
+      await category.setName(originalCategoryName);
+      console.log(`✅ Restored category name to "${originalCategoryName}"`);
+    }
+  } catch (err) {
+    console.error("Error restoring category name:", err);
+  }
+
   // Delete match channels with proper error handling
   try {
     // Delete voice channels first
@@ -6241,9 +6561,6 @@ async function endMatch(channel, winner, isVoided = false) {
     
     // Delete the match text channel
     if (matchChannel) await matchChannel.delete().catch(console.error);
-    
-    // Delete the category LAST (after all children are deleted)
-    if (matchCategory) await matchCategory.delete().catch(console.error);
     
   } catch (err) {
     console.error("Error deleting match channels:", err);
@@ -6264,7 +6581,7 @@ async function end4funMatch(channel, winner) {
     return channel.send("❌ No active 4fun match found in this channel.");
   }
 
-  const { team1, team2, matchChannel, matchCategory, team1VC, team2VC, matchId } = match;
+  const { team1, team2, matchChannel, team1VC, team2VC, matchId, originalCategoryName } = match;
   const guild = channel.guild;
 
   const winners = winner === "1" ? team1 : team2;
@@ -6308,12 +6625,22 @@ async function end4funMatch(channel, winner) {
   // Send confirmation message
   await channel.send(`✅ 4Fun Match ${matchId} ended! ${winner === "1" ? "🟦 Team 1 (Blue)" : "🔴 Team 2 (Red)"} wins!`);
 
+  // Restore the original category name
+  try {
+    const category = matchChannel.parent;
+    if (category && category.type === 4) {
+      await category.setName(originalCategoryName);
+      console.log(`✅ Restored 4fun category name to "${originalCategoryName}"`);
+    }
+  } catch (err) {
+    console.error("Error restoring 4fun category name:", err);
+  }
+
   // Delete match channels
   try {
     if (team1VC) await team1VC.delete().catch(console.error);
     if (team2VC) await team2VC.delete().catch(console.error);
     if (matchChannel) await matchChannel.delete().catch(console.error);
-    if (matchCategory) await matchCategory.delete().catch(console.error);
   } catch (err) {
     console.error("Error deleting 4fun match channels:", err);
   }
@@ -6375,6 +6702,7 @@ client.once("ready", async () => {
 
   // 4fun leaderboard setup
   await update4funLeaderboardChannel(guild);
+  await updateLeaderboardChannel(guild);
   
   console.log('✅ Bot fully initialized with data loaded');
   console.log('✅ Bot fully initialized with 4fun system');
