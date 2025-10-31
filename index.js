@@ -970,6 +970,48 @@ async function generateLeaderboardEmbed(sortType = "rank") {
   return embed;
 }
 
+// ---------------- EPHEMERAL LEADERBOARD FUNCTION ----------------
+async function sendEphemeralLeaderboard(interaction, sortType = "rank") {
+  const embed = await generateLeaderboardEmbed(sortType);
+  
+  // Create buttons for different sort types
+  const sortButtonsRow1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("leaderboard_rank")
+      .setLabel("⭐ Rank")
+      .setStyle(sortType === "rank" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("leaderboard_wins")
+      .setLabel("🏆 Wins")
+      .setStyle(sortType === "wins" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("leaderboard_losses")
+      .setLabel("💀 Losses")
+      .setStyle(sortType === "losses" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("leaderboard_winrate")
+      .setLabel("📊 Win Rate")
+      .setStyle(sortType === "winrate" ? ButtonStyle.Primary : ButtonStyle.Secondary)
+  );
+
+  const sortButtonsRow2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("leaderboard_matches")
+      .setLabel("🎮 Matches")
+      .setStyle(sortType === "matches" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("leaderboard_netwins")
+      .setLabel("📈 Net Wins")
+      .setStyle(sortType === "netwins" ? ButtonStyle.Primary : ButtonStyle.Secondary)
+  );
+
+  return {
+    embeds: [embed],
+    components: [sortButtonsRow1, sortButtonsRow2],
+    ephemeral: true
+  };
+}
+
 async function update4funLeaderboardChannel(guild) {
   const channelName = "4fun-leaderboard";
   let lbChannel = guild.channels.cache.find(c => c.name === channelName && c.type === 0);
