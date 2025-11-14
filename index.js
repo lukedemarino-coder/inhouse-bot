@@ -7281,7 +7281,7 @@ async function end4funMatch(channel, winner) {
 }
 
 // ---------------- READY ----------------
-const MAIN_GUILD_ID = "1421221145532956722";
+const MAIN_GUILD_ID = "1423242905602101310";
 
 client.once("ready", async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
