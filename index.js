@@ -55,14 +55,13 @@ const QUEUE_SIZE = 10;
 const MATCH_HISTORY_FILE = "matchHistory.json";
 const QUEUE4FUN_SIZE = 10;
 const FUN_POINTS_PER_GAME = 50;
-const DUO_REQUEST_EXPIRY = 5 * 60 * 1000; // Duo request expiration time (10 minutes)
+const DUO_REQUEST_EXPIRY = 5 * 60 * 1000; // Duo request expiration time (5 minutes)
 
 let queue = [];
 let queue4fun = [];
 let queueMessage;
 let queueMessage4fun;
 let leaderboardMessage;
-let leaderboardMessage4fun;
 let matches = new Map();
 let matches4fun = new Map();
 let activeReadyCheck = null;
@@ -71,17 +70,14 @@ let queueEnabled = true;
 let bannedUsers = new Set();
 let requestCount = 0;
 let saveDataTimeout = null;
-let pendingDuoRequests = new Map(); // key: requesterId, value: { targetId, timestamp }
-let voteMessageTimers = new Map(); // key: channelId, value: timer
-let voteMessageFloodCheck = new Map(); // key: channelId, value: { lastMessageCount: number, lastCheck: number }
-// Add this global variable to track the last used category
+let pendingDuoRequests = new Map();
+let voteMessageTimers = new Map();
+let voteMessageFloodCheck = new Map();
 let lastUsedCategoryIndex = -1;
-
-// Add block system
-let userBlocks = new Map(); // userId -> Set of blocked user IDs
-
-// ADD SOLUTION 1: Queue Locking
+let pendingNormalDuoRequests = new Map();
+let userBlocks = new Map();
 let queueLock = false;
+let endingMatches = new Set();
 
 // Message Delete Queue
 class MessageDeleteQueue {
@@ -163,17 +159,16 @@ function ensurePlayer(id) {
       roles: [],
       currentStreak: 0,
       streakType: "none",
-      // ADD THIS LINE - default to true for DM notifications
       dmNotifications: true,
-      // 4fun stats
+      duoPartner: null, // Add normal queue duo partner
       fun: {
         points: 0,
         wins: 0,
         losses: 0,
         matchesPlayed: 0,
         hiddenMMR: 0,
-        // Add DM notifications for 4fun queue as well
-        dmNotifications: true
+        dmNotifications: true,
+        duoPartner: null
       }
     };
   }
@@ -188,8 +183,8 @@ function ensurePlayer(id) {
   if (player.roles === undefined) player.roles = [];
   if (player.currentStreak === undefined) player.currentStreak = 0;
   if (player.streakType === undefined) player.streakType = "none";
-  // ADD THIS LINE - ensure dmNotifications exists
   if (player.dmNotifications === undefined) player.dmNotifications = true;
+  if (player.duoPartner === undefined) player.duoPartner = null;
   
   // Ensure 4fun stats exist
   if (!player.fun) {
@@ -828,7 +823,7 @@ async function updateLeaderboardChannel(guild) {
 }
 
 // Function to generate leaderboard embed based on sort type
-async function generateLeaderboardEmbed(sortType = "rank") {
+async function generateLeaderboardEmbed(sortType = "rank", page = 0) {
   // Filter out system keys and players with no games
   const players = Object.keys(playerData)
     .filter(id => {
@@ -924,37 +919,43 @@ async function generateLeaderboardEmbed(sortType = "rank") {
     description += `**Average Rank: ${averageRankDisplay}**\n\n`;
   }
 
+  // Pagination logic
+  const playersPerPage = 20;
+  const totalPages = Math.ceil(sortedPlayers.length / playersPerPage);
+  const startIndex = page * playersPerPage;
+  const endIndex = Math.min(startIndex + playersPerPage, sortedPlayers.length);
+  const currentPagePlayers = sortedPlayers.slice(startIndex, endIndex);
+
   // Build the leaderboard display
-  if (sortedPlayers.length === 0) {
+  if (currentPagePlayers.length === 0) {
     description += "No players match the current criteria.";
   } else {
-    const top20 = sortedPlayers.slice(0, 20);
-    
-    description += top20
+    description += currentPagePlayers
       .map((p, idx) => {
+        const globalIndex = startIndex + idx + 1;
         const rankDiv = p.division ? `${p.rank} ${p.division}` : p.rank;
         
         switch (sortType) {
           case "wins":
-            return `#${idx + 1} • <@${p.id}> | ${p.wins} wins | ${p.losses} losses | ${p.wr}% WR | ${p.gp} games`;
+            return `#${globalIndex} • <@${p.id}> | ${p.wins} wins | ${p.losses} losses | ${p.wr}% WR | ${p.gp} games`;
           
           case "losses":
-            return `#${idx + 1} • <@${p.id}> | ${p.losses} losses | ${p.wins} wins | ${p.wr}% WR | ${p.gp} games`;
+            return `#${globalIndex} • <@${p.id}> | ${p.losses} losses | ${p.wins} wins | ${p.wr}% WR | ${p.gp} games`;
           
           case "winrate":
-            return `#${idx + 1} • <@${p.id}> | ${p.wr}% WR | ${p.wins}W/${p.losses}L | ${p.gp} games`;
+            return `#${globalIndex} • <@${p.id}> | ${p.wr}% WR | ${p.wins}W/${p.losses}L | ${p.gp} games`;
           
           case "rank":
-            return `#${idx + 1} • <@${p.id}> | ${rankDiv} ${p.lp} LP | ${p.wins}W/${p.losses}L | ${p.wr}% WR`;
+            return `#${globalIndex} • <@${p.id}> | ${rankDiv} ${p.lp} LP | ${p.wins}W/${p.losses}L | ${p.wr}% WR`;
           
           case "matches":
-            return `#${idx + 1} • <@${p.id}> | ${p.gp} games | ${p.wins}W/${p.losses}L | ${p.wr}% WR`;
+            return `#${globalIndex} • <@${p.id}> | ${p.gp} games | ${p.wins}W/${p.losses}L | ${p.wr}% WR`;
           
           case "netwins":
-            return `#${idx + 1} • <@${p.id}> | ${p.netWins > 0 ? '+' : ''}${p.netWins} net wins | ${p.wins}W/${p.losses}L | ${p.wr}% WR`;
+            return `#${globalIndex} • <@${p.id}> | ${p.netWins > 0 ? '+' : ''}${p.netWins} net wins | ${p.wins}W/${p.losses}L | ${p.wr}% WR`;
           
           default:
-            return `#${idx + 1} • <@${p.id}> | ${rankDiv} ${p.lp} LP | ${p.wins}W/${p.losses}L | ${p.wr}% WR`;
+            return `#${globalIndex} • <@${p.id}> | ${rankDiv} ${p.lp} LP | ${p.wins}W/${p.losses}L | ${p.wr}% WR`;
         }
       })
       .join("\n");
@@ -965,14 +966,15 @@ async function generateLeaderboardEmbed(sortType = "rank") {
     .setDescription(description)
     .setColor(0xffd700)
     .setTimestamp()
-    .setFooter({ text: `Showing ${Math.min(sortedPlayers.length, 20)} of ${sortedPlayers.length} players` });
+    .setFooter({ text: `Page ${page + 1}/${totalPages} | Showing ${startIndex + 1}-${endIndex} of ${sortedPlayers.length} players` });
 
-  return embed;
+  return { embed, totalPages, currentPage: page };
 }
 
+
 // ---------------- EPHEMERAL LEADERBOARD FUNCTION ----------------
-async function sendEphemeralLeaderboard(interaction, sortType = "rank") {
-  const embed = await generateLeaderboardEmbed(sortType);
+async function sendEphemeralLeaderboard(interaction, sortType = "rank", page = 0) {
+  const { embed, totalPages, currentPage } = await generateLeaderboardEmbed(sortType, page);
   
   // Create buttons for different sort types
   const sortButtonsRow1 = new ActionRowBuilder().addComponents(
@@ -1005,109 +1007,25 @@ async function sendEphemeralLeaderboard(interaction, sortType = "rank") {
       .setStyle(sortType === "netwins" ? ButtonStyle.Primary : ButtonStyle.Secondary)
   );
 
+  // Create pagination buttons
+  const paginationRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`leaderboard_prev_${sortType}_${page}`)
+      .setLabel("◀ Previous")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page === 0),
+    new ButtonBuilder()
+      .setCustomId(`leaderboard_next_${sortType}_${page}`)
+      .setLabel("Next ▶")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page >= totalPages - 1)
+  );
+
   return {
     embeds: [embed],
-    components: [sortButtonsRow1, sortButtonsRow2],
+    components: [sortButtonsRow1, sortButtonsRow2, paginationRow],
     ephemeral: true
   };
-}
-
-async function update4funLeaderboardChannel(guild) {
-  const channelName = "4fun-leaderboard";
-  let lbChannel = guild.channels.cache.find(c => c.name === channelName && c.type === 0);
-  if (!lbChannel) {
-    lbChannel = await guild.channels.create({ name: channelName, type: 0 });
-  }
-
-  if (!leaderboardMessage4fun || !leaderboardMessage4fun.length) {
-    const fetched = await lbChannel.messages.fetch({ limit: 20 });
-    const existing = fetched.filter(m => m.author.id === client.user.id && m.embeds.length > 0);
-    if (existing.size > 0) {
-      leaderboardMessage4fun = Array.from(existing.values()).sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-      console.log(`Found ${leaderboardMessage4fun.length} existing 4fun leaderboard messages.`);
-    } else {
-      leaderboardMessage4fun = [];
-    }
-  }
-
-  // Build 4fun leaderboard - only include players that have played 4fun matches
-  const players = Object.keys(playerData)
-    .filter(id => {
-      if (id.startsWith('_')) return false;
-      const p = playerData[id];
-      const hasPlayed4fun = p.fun?.matchesPlayed > 0;
-      return p && typeof p === 'object' && p.fun && hasPlayed4fun;
-    })
-    .map(id => {
-      const p = playerData[id];
-      const fun = p.fun;
-      const normalRankDisplay = formatRankDisplay(p.rank, p.division, p.lp);
-      const wr = fun.matchesPlayed > 0 ? ((fun.wins / fun.matchesPlayed) * 100).toFixed(1) : "0.0";
-      return {
-        id,
-        normalRankDisplay,
-        points: fun.points,
-        wins: fun.wins,
-        losses: fun.losses,
-        wr,
-        matchesPlayed: fun.matchesPlayed
-      };
-    })
-    .sort((a, b) => b.points - a.points); // highest 4fun points first
-
-  const chunkSize = 20;
-  const embeds = [];
-  
-  if (players.length === 0) {
-    const embed = new EmbedBuilder()
-      .setTitle("🏆 4Fun Leaderboard")
-      .setDescription("No players have completed any 4fun matches yet. Play your first 4fun match to appear on the leaderboard!")
-      .setColor(0xff00ff)
-      .setTimestamp();
-    embeds.push(embed);
-  } else {
-    for (let i = 0; i < players.length; i += chunkSize) {
-      const chunk = players.slice(i, i + chunkSize);
-      const description = chunk
-        .map((p, idx) => {
-          const line1 = `#${i + idx + 1} • ${p.normalRankDisplay} • ${p.points} 4fun pts`;
-          const line2 = `<@${p.id}> | W: ${p.wins} | L: ${p.losses} | WR: ${p.wr}% | GP: ${p.matchesPlayed}`;
-          return `${line1}\n${line2}`;
-        })
-        .join("\n\n");
-
-      const embed = new EmbedBuilder()
-        .setTitle(i === 0 ? "🏆 4Fun Leaderboard" : `4Fun Leaderboard (cont.)`)
-        .setDescription(description)
-        .setColor(0xff00ff)
-        .setTimestamp();
-      embeds.push(embed);
-    }
-  }
-
-  if (leaderboardMessage4fun && leaderboardMessage4fun.length) {
-    for (let i = 0; i < embeds.length; i++) {
-      const embed = embeds[i];
-      if (leaderboardMessage4fun[i]) {
-        await leaderboardMessage4fun[i].edit({ embeds: [embed] }).catch(() => {});
-      } else {
-        const msg = await lbChannel.send({ embeds: [embed] });
-        leaderboardMessage4fun.push(msg);
-      }
-    }
-    if (leaderboardMessage4fun.length > embeds.length) {
-      for (let i = embeds.length; i < leaderboardMessage4fun.length; i++) {
-        await leaderboardMessage4fun[i].delete().catch(() => {});
-      }
-      leaderboardMessage4fun = leaderboardMessage4fun.slice(0, embeds.length);
-    }
-  } else {
-    leaderboardMessage4fun = [];
-    for (const embed of embeds) {
-      const msg = await lbChannel.send({ embeds: [embed] });
-      leaderboardMessage4fun.push(msg);
-    }
-  }
 }
 
 // ---------------- READY CHECK ----------------
@@ -1126,7 +1044,7 @@ async function startReadyCheck(channel) {
   const participants = [...queue];
   const ready = new Set();
   const declined = new Set();
-  const TIMEOUT = 60; // 60 seconds
+  const TIMEOUT = 65; // 60 seconds
   const endTime = Date.now() + (TIMEOUT * 1000);
 
   // Debounce variables
@@ -1734,14 +1652,60 @@ process.on("unhandledRejection", (reason, promise) => {
 });
 
 function buildQueueEmbed() {
+  // Group duos in queue
+  const duosInQueue = [];
+  const soloInQueue = [];
+  const processed = new Set();
+
+  queue.forEach(playerId => {
+    if (processed.has(playerId)) return;
+
+    const player = ensurePlayer(playerId);
+    if (player.duoPartner && queue.includes(player.duoPartner)) {
+      duosInQueue.push([playerId, player.duoPartner]);
+      processed.add(playerId);
+      processed.add(player.duoPartner);
+    } else {
+      soloInQueue.push(playerId);
+      processed.add(playerId);
+    }
+  });
+
+  let queueDescription = "";
+
+  // Display duos
+  if (duosInQueue.length > 0) {
+    queueDescription += "**🤝 Duos:**\n";
+    duosInQueue.forEach((duo, index) => {
+      queueDescription += `${index + 1}. <@${duo[0]}> + <@${duo[1]}>\n`;
+    });
+    queueDescription += "\n";
+  }
+
+  // Display solo players
+  if (soloInQueue.length > 0) {
+    queueDescription += "**👤 Solo Players:**\n";
+    soloInQueue.forEach((playerId, index) => {
+      queueDescription += `${duosInQueue.length + index + 1}. <@${playerId}>\n`;
+    });
+  }
+
+  if (queue.length === 0) {
+    queueDescription = "The queue is currently empty.";
+  }
+
+  // Add note about duo balancing
+  if (duosInQueue.length > 0) {
+    queueDescription += `\n*Note: Duos may be separated if needed to balance matches within 25 ELO*`;
+  }
+
   const embed = new EmbedBuilder()
     .setTitle("🎮 Current Queue")
     .setColor(queueEnabled ? 0x00ff00 : 0xff0000)
-    .setDescription(
-      (queue.length ? queue.map((id, i) => `${i + 1}. <@${id}>`).join("\n") : "The queue is currently empty.") +
-      `\n\nStatus: **${queueEnabled ? "OPEN" : "CLOSED"}**`
-    )
-    .setFooter({ text: `Queue Size: ${queue.length}/${QUEUE_SIZE}` })
+    .setDescription(queueDescription + `\nStatus: **${queueEnabled ? "OPEN" : "CLOSED"}**`)
+    .setFooter({ 
+      text: `Queue Size: ${queue.length}/${QUEUE_SIZE} | Duos: ${duosInQueue.length}` 
+    })
     .setTimestamp();
   return embed;
 }
@@ -1918,13 +1882,11 @@ async function updateQueueMessage() {
   trackRequest();
   if (!queueMessage) return;
 
-  // Debounce rapid updates
   if (updateQueueTimeout) {
     clearTimeout(updateQueueTimeout);
   }
 
   updateQueueTimeout = setTimeout(async () => {
-    // dynamically rebuild the Multi OP.GG link
     const getMultiOPGG = () => {
       const summoners = queue
         .map((id) => playerData[id]?.summonerName)
@@ -1946,12 +1908,10 @@ async function updateQueueMessage() {
     const joinRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("join").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("leave").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("duo").setLabel("🤝 Request Duo").setStyle(ButtonStyle.Primary), // Add duo button
       new ButtonBuilder().setLabel("🌐 Multi OP.GG").setStyle(ButtonStyle.Link).setURL(getMultiOPGG())
     );
 
-    // Update DM toggle button based on user's setting
-    // For the queue message, we'll show the current user's setting when they interact
-    // The default label will be "DM Notifications"
     const dmToggleRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId("toggle_dm")
@@ -1963,7 +1923,7 @@ async function updateQueueMessage() {
     const embed = buildQueueEmbed();
     await queueMessage.edit({ 
       embeds: [embed], 
-      components: [joinRow, dmToggleRow] // Include both rows
+      components: [joinRow, dmToggleRow]
     });
   }, 250);
 }
@@ -2059,6 +2019,131 @@ function logRoleAssignmentToConsole(bestTeam1, bestTeam2, team1Roles, team2Roles
 }
 
 client.on("interactionCreate", async (interaction) => {
+  if (interaction.isUserSelectMenu() && interaction.customId === 'normal_duo_partner_select') {
+    const selectedUserId = interaction.values[0];
+    const requesterId = interaction.user.id;
+
+    // Validation
+    if (selectedUserId === requesterId) {
+      return interaction.reply({
+        content: "❌ You cannot request a duo with yourself.",
+        ephemeral: true
+      });
+    }
+
+    const requester = ensurePlayer(requesterId);
+    const target = ensurePlayer(selectedUserId);
+
+    // Validate target player
+    if (!target.summonerName) {
+      return interaction.reply({
+        content: "❌ That player is not registered. They need to use `!register` first.",
+        ephemeral: true
+      });
+    }
+
+    if (target.duoPartner) {
+      return interaction.reply({
+        content: `❌ <@${selectedUserId}> is already in a duo with <@${target.duoPartner}>.`,
+        ephemeral: true
+      });
+    }
+
+    // Check if target is in queue
+    const targetInQueue = queue.includes(selectedUserId);
+
+    // Find the duo-requests channel
+    const duoRequestsChannel = interaction.guild.channels.cache.find(
+      channel => channel.name === 'duo-requests' && channel.type === 0
+    );
+
+    if (!duoRequestsChannel) {
+      return interaction.update({
+        content: '❌ Error: #duo-requests channel not found. Please contact an admin.',
+        components: []
+      });
+    }
+
+    try {
+      const expirationTimestamp = Math.floor((Date.now() + DUO_REQUEST_EXPIRY) / 1000);
+      
+      const embed = new EmbedBuilder()
+        .setTitle("🤝 Duo Request (Normal Queue)")
+        .setDescription(`<@${requesterId}> wants to form a duo with <@${selectedUserId}> for normal queue!`)
+        .addFields(
+          { name: "Requester", value: `<@${requesterId}>`, inline: true },
+          { name: "Target", value: `<@${selectedUserId}>`, inline: true },
+          { name: "Queue Status", value: targetInQueue ? "✅ Target in queue" : "❌ Target not in queue", inline: true },
+          { name: "Expires", value: `<t:${expirationTimestamp}:R>`, inline: true }
+        )
+        .setColor(0x0099FF)
+        .setTimestamp();
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`accept_normal_duo_${requesterId}_${selectedUserId}`)
+          .setLabel("✅ Accept")
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`decline_normal_duo_${requesterId}_${selectedUserId}`)
+          .setLabel("❌ Decline")
+          .setStyle(ButtonStyle.Danger)
+      );
+
+      const duoMessage = await duoRequestsChannel.send({ 
+        content: `<@${selectedUserId}>`,
+        embeds: [embed], 
+        components: [row] 
+      });
+
+      const requestData = {
+        targetId: selectedUserId,
+        timestamp: Date.now(),
+        messageId: duoMessage.id,
+        channelId: duoRequestsChannel.id,
+        expirationTimestamp: expirationTimestamp
+      };
+
+      requestData.timer = setTimeout(async () => {
+        if (pendingNormalDuoRequests.has(requesterId)) {
+          const expiredRequest = pendingNormalDuoRequests.get(requesterId);
+          pendingNormalDuoRequests.delete(requesterId);
+          
+          try {
+            const channel = interaction.guild.channels.cache.get(expiredRequest.channelId);
+            if (channel) {
+              const message = await channel.messages.fetch(expiredRequest.messageId);
+              const expiredEmbed = EmbedBuilder.from(message.embeds[0])
+                .setColor(0xff0000)
+                .spliceFields(4, 1, { name: "Status", value: "❌ Expired", inline: true });
+              
+              await message.edit({ 
+                embeds: [expiredEmbed], 
+                components: [] 
+              });
+            }
+          } catch (error) {
+            console.error("Failed to update expired normal duo request:", error);
+          }
+        }
+      }, DUO_REQUEST_EXPIRY);
+
+      pendingNormalDuoRequests.set(requesterId, requestData);
+
+      await interaction.update({
+        content: `✅ Duo request sent to <@${selectedUserId}> in ${duoRequestsChannel}! They have 5 minutes to accept.`,
+        components: []
+      });
+
+    } catch (error) {
+      console.error("Failed to send normal duo request:", error);
+      await interaction.reply({
+        content: "❌ Could not send duo request. Please try again.",
+        ephemeral: true
+      });
+    }
+  }
+
   if (interaction.isUserSelectMenu() && interaction.customId === 'duo_partner_select') {
     const selectedUserId = interaction.values[0]; // The selected user's ID
     const requesterId = interaction.user.id;
@@ -2194,9 +2279,137 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 
+  
+
   // ---------------- BUTTONS ----------------
   if (interaction.isButton()) {
     const id = interaction.user.id;
+    if (interaction.customId === 'duo') {
+      const requesterId = interaction.user.id;
+      const requester = ensurePlayer(requesterId);
+
+      // Validation checks
+      if (!requester.summonerName) {
+        return interaction.reply({
+          content: "❌ You must be registered with `!register` before requesting a duo.",
+          ephemeral: true
+        });
+      }
+
+      if (requester.duoPartner) {
+        return interaction.reply({
+          content: `❌ You are already in a duo with <@${requester.duoPartner}>. Use \`!duobreak\` to dissolve it first.`,
+          ephemeral: true
+        });
+      }
+
+      // Check for existing pending request
+      if (pendingNormalDuoRequests.has(requesterId)) {
+        return interaction.reply({
+          content: "❌ You already have a pending duo request. Please wait for it to be accepted or expire.",
+          ephemeral: true
+        });
+      }
+
+      // Create user select menu for normal queue
+      const selectMenuRow = new ActionRowBuilder()
+        .addComponents(
+          new UserSelectMenuBuilder()
+            .setCustomId('normal_duo_partner_select')
+            .setPlaceholder('Select your duo partner...')
+            .setMaxValues(1)
+        );
+
+      await interaction.reply({
+        content: 'Please select your duo partner from the list below:',
+        components: [selectMenuRow],
+        ephemeral: true
+      });
+    }
+
+    // Handle normal duo accept/decline buttons
+    if (interaction.customId.startsWith("accept_normal_duo_") || interaction.customId.startsWith("decline_normal_duo_")) {
+      const parts = interaction.customId.split('_');
+      const action = parts[0]; // "accept" or "decline"
+      const requesterId = parts[3];
+      const targetId = parts[4];
+      
+      const request = pendingNormalDuoRequests.get(requesterId);
+      if (!request || request.targetId !== targetId) {
+        return interaction.reply({
+          content: "❌ This duo request has expired or is invalid.",
+          ephemeral: true
+        });
+      }
+      
+      if (interaction.user.id !== targetId) {
+        return interaction.reply({
+          content: "❌ Only the requested player can respond to this duo request.",
+          ephemeral: true
+        });
+      }
+      
+      if (action === "accept") {
+        // Form the duo partnership
+        const requester = ensurePlayer(requesterId);
+        const target = ensurePlayer(targetId);
+          
+        requester.duoPartner = targetId;
+        target.duoPartner = requesterId;
+        saveData();
+          
+        pendingNormalDuoRequests.delete(requesterId);
+          
+        const acceptedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+          .setColor(0x00ff00)
+          .spliceFields(4, 1, { name: "Status", value: "✅ Accepted", inline: true });
+          
+        await interaction.message.edit({ 
+          embeds: [acceptedEmbed], 
+          components: [] 
+        });
+          
+        await interaction.reply({
+          content: `✅ You have accepted the duo request from <@${requesterId}>! You are now duo partners for normal queue.`,
+          ephemeral: true
+        });
+
+        if (request.timer) {
+          clearTimeout(request.timer);
+        }
+
+      } else {
+        // Decline the request
+        pendingNormalDuoRequests.delete(requesterId);
+          
+        const declinedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+          .setColor(0xff0000)
+          .spliceFields(4, 1, { name: "Status", value: "❌ Declined", inline: true });
+          
+        await interaction.message.edit({ 
+          embeds: [declinedEmbed], 
+          components: [] 
+        });
+          
+        await interaction.reply({
+          content: "❌ You have declined the duo request.",
+          ephemeral: true
+        });
+          
+        // Notify the requester
+        try {
+          const requesterUser = await client.users.fetch(requesterId);
+          await requesterUser.send(`❌ <@${targetId}> declined your normal queue duo request.`);
+        } catch (error) {
+          // If DMs are disabled, that's okay
+        }
+
+        if (request.timer) {
+          clearTimeout(request.timer);
+        }
+      }
+    }
+
     if (interaction.component?.style === ButtonStyle.Link) {
       // Find the match for this channel
       const match = matches.get(interaction.channelId);
@@ -2237,16 +2450,38 @@ client.on("interactionCreate", async (interaction) => {
     }
     
     // Handle sorting buttons within ephemeral messages
-    else if (interaction.customId.startsWith("leaderboard_")) {
+    if (interaction.customId.startsWith("leaderboard_")) {
       // Extract sort type from the custom ID
-      const sortType = interaction.customId.replace("leaderboard_", "");
+      const customIdParts = interaction.customId.split('_');
       
-      // Generate updated embed and components
-      const updatedMessage = await sendEphemeralLeaderboard(interaction, sortType);
-      
-      // Update the ephemeral message
-      await interaction.update(updatedMessage);
-      return;
+      if (customIdParts[1] === "prev" || customIdParts[1] === "next") {
+        // Handle pagination buttons
+        const sortType = customIdParts[2];
+        let currentPage = parseInt(customIdParts[3]);
+        
+        if (customIdParts[1] === "prev") {
+          currentPage = Math.max(0, currentPage - 1);
+        } else {
+          currentPage = currentPage + 1;
+        }
+        
+        // Generate updated embed and components
+        const updatedMessage = await sendEphemeralLeaderboard(interaction, sortType, currentPage);
+        
+        // Update the ephemeral message
+        await interaction.update(updatedMessage);
+        return;
+      } else {
+        // Handle sorting buttons (existing code)
+        const sortType = interaction.customId.replace("leaderboard_", "");
+        
+        // Generate updated embed and components with page reset to 0
+        const updatedMessage = await sendEphemeralLeaderboard(interaction, sortType, 0);
+        
+        // Update the ephemeral message
+        await interaction.update(updatedMessage);
+        return;
+      }
     }
 
     // --- DM Toggle Button ---
@@ -2468,6 +2703,18 @@ client.on("interactionCreate", async (interaction) => {
 
     // --- Join Queue ---
     if (interaction.customId === "join") {
+      const id = interaction.user.id;
+      ensurePlayer(id);
+      const player = ensurePlayer(id);
+
+      // Verify user is registered
+      if (!player.summonerName) {
+        return interaction.reply({
+          content: "❌ You must **register** first with `!register <OP.GG link>` before joining the queue.",
+          ephemeral: true,
+        });
+      }
+
       if (bannedUsers.has(interaction.user.id)) {
         return interaction.reply({
           content: "🚫 You are banned from queuing. Contact an admin if you believe this is a mistake.",
@@ -2530,14 +2777,6 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      const player = playerData[id];
-      if (!player || !player.summonerName) {
-        return interaction.reply({
-          content: "❌ You must **register** first with !register <OP.GG link> before joining the queue.",
-          ephemeral: true,
-        });
-      }
-
       // Enhanced role verification
       if (!player.roles || player.roles.length < 5 || player.roles.some(r => !r)) {
         const missingRolesEmbed = new EmbedBuilder()
@@ -2563,7 +2802,6 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      // ADD SOLUTION 1 & 2: Queue Locking with Atomic Operations
       try {
         // LOCK THE QUEUE
         queueLock = true;
@@ -2587,7 +2825,7 @@ client.on("interactionCreate", async (interaction) => {
         saveData();
         await updateQueueMessage();
         
-        // ADD SOLUTION 3: Strict Ready Check Trigger
+        // Strict Ready Check Trigger
         if (queue.length === QUEUE_SIZE && !activeReadyCheck) {
           await startReadyCheck(interaction.channel);
         }
@@ -2726,7 +2964,6 @@ client.on("interactionCreate", async (interaction) => {
     // --- Leave Queue ---
     else if (interaction.customId === "leave") {
       if (!queue.includes(id)) {
-        // Silently ignore if not in queue
         try {
           await interaction.deferUpdate();
         } catch (err) {
@@ -2736,6 +2973,16 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       queue = queue.filter((x) => x !== id);
+      
+      // If player has duo partner in queue, remove them too
+      const player = ensurePlayer(id);
+      if (player.duoPartner && queue.includes(player.duoPartner)) {
+        queue = queue.filter(x => x !== player.duoPartner);
+        await interaction.channel.send({
+          content: `⚠️ <@${player.duoPartner}> was removed from queue because their duo partner <@${id}> left.`
+        });
+      }
+
       saveData();
       await updateQueueMessage();
 
@@ -2744,7 +2991,7 @@ client.on("interactionCreate", async (interaction) => {
       } catch (err) {
         if (err.code !== 10062) console.error("Leave deferUpdate failed:", err);
       }
-    }
+  }
 
     // --- Multi OP.GG ---
     else if (interaction.customId === "opgg") {
@@ -2896,7 +3143,7 @@ client.on("interactionCreate", async (interaction) => {
           );
 
       await interaction.reply({
-          content: 'Please select your duo partner from the list below:',
+          content: 'Please type your duo partner below:',
           components: [selectMenuRow],
           ephemeral: true
       });
@@ -2906,6 +3153,14 @@ client.on("interactionCreate", async (interaction) => {
     if (interaction.customId === "join4fun") {
       const id = interaction.user.id;
       ensurePlayer(id);
+
+      // Verify user is registered
+      if (!player.summonerName) {
+        return interaction.reply({
+          content: "❌ You must **register** first with `!register <OP.GG link>` before joining the 4fun queue.",
+          ephemeral: true,
+        });
+      }
 
       // Check if in timeout
       const timeoutStatus = isUserInTimeout(interaction.user.id);
@@ -3184,6 +3439,113 @@ client.on("messageCreate", async (message) => {
       }
     }
     
+    if (cmd === "!simulateduo") {
+      if (!message.member.permissions.has("ManageGuild")) {
+          return message.reply("❌ Only staff members can use this command.");
+      }
+
+      const duoCount = parseInt(args[0] || "1");
+      
+      // Get registered players with complete role preferences
+      const eligiblePlayers = Object.keys(playerData).filter(id => {
+          // Filter out system keys
+          if (id.startsWith('_')) return false;
+          
+          const player = playerData[id];
+          
+          // Check for summoner name and complete role preferences
+          if (!player?.summonerName) return false;
+          
+          // Enhanced role verification: must have exactly 5 roles, all non-null
+          if (!player.roles || player.roles.length !== 5 || player.roles.some(role => !role)) {
+              return false;
+          }
+          
+          // Check if player already has a duo partner
+          if (player.duoPartner) return false;
+          
+          // Check if player is already in queue
+          if (queue.includes(id)) return false;
+          
+          // Check if player is in timeout
+          const timeoutStatus = isUserInTimeout(id);
+          if (timeoutStatus.inTimeout) return false;
+          
+          return true;
+      });
+
+      if (eligiblePlayers.length < 2) {
+          return message.reply("❌ Not enough eligible players (need at least 2 players without duos, complete role preferences, and not in timeout).");
+      }
+
+      // Shuffle eligible players array to get random selection
+      const shuffledPlayers = [...eligiblePlayers].sort(() => Math.random() - 0.5);
+      
+      let duosCreated = 0;
+      let playersAdded = 0;
+      const duoPairs = [];
+
+      // Create duos
+      for (let i = 0; i < Math.min(duoCount * 2, shuffledPlayers.length); i += 2) {
+          if (i + 1 >= shuffledPlayers.length) break; // Need pairs of 2
+          
+          const player1Id = shuffledPlayers[i];
+          const player2Id = shuffledPlayers[i + 1];
+          
+          // Check if we have room in queue
+          if (queue.length + 2 > QUEUE_SIZE) {
+              message.channel.send(`⚠️ Queue is full after adding ${playersAdded} players. Stopping duo creation.`);
+              break;
+          }
+
+          // Form the duo partnership
+          const player1 = ensurePlayer(player1Id);
+          const player2 = ensurePlayer(player2Id);
+          
+          player1.duoPartner = player2Id;
+          player2.duoPartner = player1Id;
+          
+          // Add both players to queue
+          if (!queue.includes(player1Id)) {
+              queue.push(player1Id);
+              playersAdded++;
+          }
+          if (!queue.includes(player2Id)) {
+              queue.push(player2Id);
+              playersAdded++;
+          }
+          
+          duosCreated++;
+          duoPairs.push([player1Id, player2Id]);
+          
+          console.log(`🤝 Created duo: ${player1Id} + ${player2Id}`);
+      }
+
+      saveData();
+      
+      let response = `🤖 Created ${duosCreated} random duo(s) and added ${playersAdded} players to queue. Queue = ${queue.length}/${QUEUE_SIZE}`;
+
+      // Show which duos were created
+      if (duoPairs.length > 0) {
+          const duoList = duoPairs.map((duo, index) => 
+              `${index + 1}. <@${duo[0]}> + <@${duo[1]}>`
+          ).join('\n');
+          response += `\n\n**Duos created:**\n${duoList}`;
+      }
+      
+      if (playersAdded < duoCount * 2) {
+          response += `\nℹ️ Only ${eligiblePlayers.length} eligible players available.`;
+      }
+
+      message.channel.send(response);
+      await updateQueueMessage();
+
+      // Start ready check if queue becomes full
+      if (queue.length === QUEUE_SIZE && !activeReadyCheck) {
+          await startReadyCheck(message.channel);
+      }
+  }
+
     // 4fun force ready command
     if (cmd === "!4funforceready") {
       if (!message.member.permissions.has("ManageGuild")) {
@@ -4520,6 +4882,70 @@ client.on("messageCreate", async (message) => {
     }
   }
 
+  // ---------------- !duobreak (for normal queue) ----------------
+  if (cmd === "!duobreak") {
+    const playerId = message.author.id;
+    const player = ensurePlayer(playerId);
+
+    if (!player.duoPartner) {
+      return message.reply("❌ You are not in a duo partnership for normal queue.");
+    }
+
+    const partnerId = player.duoPartner;
+    const partner = ensurePlayer(partnerId);
+
+    // Remove from queue if either is queued
+    if (queue.includes(playerId)) {
+      queue = queue.filter(id => id !== playerId);
+    }
+    if (queue.includes(partnerId)) {
+      queue = queue.filter(id => id !== partnerId);
+    }
+
+    // Break the duo
+    player.duoPartner = null;
+    partner.duoPartner = null;
+    
+    saveData();
+    await updateQueueMessage();
+
+    await message.reply(`✅ Duo partnership with <@${partnerId}> has been dissolved for normal queue.`);
+  }
+
+  // ---------------- !duostatus (for normal queue) ----------------
+  if (cmd === "!duostatus") {
+    const userMention = args[0] || message.author.id;
+    const userId = userMention.replace(/[<@!>]/g, "") || message.author.id;
+    
+    const player = ensurePlayer(userId);
+    const isSelf = userId === message.author.id;
+
+    if (!player.duoPartner) {
+      const messageText = isSelf ? 
+        "You are not currently in a duo partnership for normal queue. Click the '🤝 Request Duo' button in the queue to form one." :
+        `<@${userId}> is not in a duo partnership for normal queue.`;
+      return message.reply(messageText);
+    }
+
+    const partner = ensurePlayer(player.duoPartner);
+    const partnerInQueue = queue.includes(player.duoPartner);
+    const playerInQueue = queue.includes(userId);
+
+    const embed = new EmbedBuilder()
+      .setTitle("🤝 Duo Status (Normal Queue)")
+      .setDescription(isSelf ? 
+        `You are duo partners with <@${player.duoPartner}>` :
+        `<@${userId}> is duo partners with <@${player.duoPartner}>`)
+      .addFields(
+        { name: "Duo Partner", value: `<@${player.duoPartner}>`, inline: true },
+        { name: "Queue Status", value: playerInQueue && partnerInQueue ? "✅ Both in queue" : playerInQueue ? "🟡 You in queue" : partnerInQueue ? "🟡 Partner in queue" : "❌ Neither in queue", inline: true }
+      )
+      .setColor(0x0099FF)
+      .setTimestamp();
+
+    await message.channel.send({ embeds: [embed] });
+  }
+
   // ---------------- !duobreak ----------------
   if (cmd === "!duobreak") {
       const playerId = message.author.id;
@@ -4681,9 +5107,6 @@ client.on("messageCreate", async (message) => {
     if (eligiblePlayers.length === 0) {
         return message.reply("❌ No registered players with complete role preferences (all 5 positions set) found.");
     }
-
-    // Clear current queue first
-    queue = [];
     
     // Shuffle eligible players array to get random selection
     const shuffledPlayers = [...eligiblePlayers].sort(() => Math.random() - 0.5);
@@ -5196,14 +5619,13 @@ client.on("messageCreate", async (message) => {
 // ---------------- MATCHMAKING WITH ROLE ASSIGNMENT ----------------
 async function makeTeams(channel) {
   trackRequest();
-  // Filter out any players with block conflicts in the current queue
-  const playersWithBlockConflicts = new Set();
   
+  // Filter out any players with block conflicts
+  const playersWithBlockConflicts = new Set();
   for (const playerId of queue) {
     const conflicts = checkQueueForBlocks(playerId);
     if (conflicts.length > 0) {
       playersWithBlockConflicts.add(playerId);
-      // Also add the players they conflict with
       conflicts.forEach(conflictId => playersWithBlockConflicts.add(conflictId));
     }
   }
@@ -5214,7 +5636,6 @@ async function makeTeams(channel) {
       content: `🚫 **Block Conflicts Detected**\nThe following players have block conflicts and cannot be in the same match:\n${conflictList}\n\nPlease resolve these conflicts before queuing together.`
     });
     
-    // Remove all conflicting players from queue
     queue = queue.filter(id => !playersWithBlockConflicts.has(id));
     saveData();
     await updateQueueMessage();
@@ -5223,7 +5644,27 @@ async function makeTeams(channel) {
 
   const players = [...queue];
   
-  // ADDED: Enhanced combination search that considers role preferences
+  // Group players into duos and solos
+  const duos = [];
+  const solos = [];
+  const processed = new Set();
+
+  players.forEach(playerId => {
+    if (processed.has(playerId)) return;
+
+    const player = ensurePlayer(playerId);
+    if (player.duoPartner && players.includes(player.duoPartner)) {
+      duos.push([playerId, player.duoPartner]);
+      processed.add(playerId);
+      processed.add(player.duoPartner);
+    } else {
+      solos.push(playerId);
+      processed.add(playerId);
+    }
+  });
+
+  console.log(`🔍 Starting team combination search with ${duos.length} duos and ${solos.length} solos`);
+
   let bestTeam1 = null;
   let bestTeam2 = null;
   let bestDiff = Infinity;
@@ -5231,120 +5672,232 @@ async function makeTeams(channel) {
   let bestAvg1 = 0;
   let bestAvg2 = 0;
   let usedRoleOptimization = false;
+  let usedDuoAssignment = false;
 
-  // Generate all possible combinations of 5 players for team 1
-  // The remaining 5 players will automatically form team 2
   function generateCombinations(arr, k) {
     const result = [];
-    
     function backtrack(start, current) {
       if (current.length === k) {
         result.push([...current]);
         return;
       }
-      
       for (let i = start; i < arr.length; i++) {
         current.push(arr[i]);
         backtrack(i + 1, current);
         current.pop();
       }
     }
-    
     backtrack(0, []);
     return result;
   }
 
-  console.log(`🔍 Starting enhanced team combination search for ${players.length} players`);
-  console.log(`🎯 Considering role preferences with 25 Elo tolerance`);
-  
-  // Generate all possible team combinations
-  const allTeam1Combinations = generateCombinations(players, 5);
-  
-  console.log(`📊 Evaluating ${allTeam1Combinations.length} possible team combinations`);
-  
-  // First pass: Find all combinations within 25 Elo difference
-  const viableCombinations = [];
-  
-  for (const team1 of allTeam1Combinations) {
-    const team2 = players.filter(player => !team1.includes(player));
+  // PHASE 1: Try to keep duos together with balanced teams (within 25 ELO)
+  if (duos.length > 0) {
+    console.log(`🔄 PHASE 1: Trying to keep ${duos.length} duos together with balanced teams`);
     
-    // Calculate average ELO for both teams
-    const sum1 = team1.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0);
-    const sum2 = team2.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0);
-    const avg1 = sum1 / 5;
-    const avg2 = sum2 / 5;
-    const diff = Math.abs(avg1 - avg2);
-    
-    // Check if within 25 Elo tolerance
-    if (diff <= 25) {
-      viableCombinations.push({ team1, team2, diff, avg1, avg2 });
+    const duoAssignments = [];
+    const generateDuoAssignments = (currentAssignment, index) => {
+      if (index === duos.length) {
+        duoAssignments.push([...currentAssignment]);
+        return;
+      }
+      
+      // Try assigning duo to team1
+      currentAssignment.push({ duo: duos[index], team: 1 });
+      generateDuoAssignments(currentAssignment, index + 1);
+      currentAssignment.pop();
+      
+      // Try assigning duo to team2
+      currentAssignment.push({ duo: duos[index], team: 2 });
+      generateDuoAssignments(currentAssignment, index + 1);
+      currentAssignment.pop();
+    };
+
+    generateDuoAssignments([], 0);
+    console.log(`📊 Evaluating ${duoAssignments.length} duo assignments`);
+
+    // For each duo assignment, assign solos to complete teams
+    for (const assignment of duoAssignments) {
+      const team1 = [];
+      const team2 = [];
+      
+      // Add duos to teams based on assignment
+      assignment.forEach(({ duo, team }) => {
+        if (team === 1) {
+          team1.push(duo[0]);
+          team1.push(duo[1]);
+        } else {
+          team2.push(duo[0]);
+          team2.push(duo[1]);
+        }
+      });
+      
+      // Check if teams are valid (not exceeding 5 players)
+      if (team1.length > 5 || team2.length > 5) continue;
+      
+      const remainingSlots1 = 5 - team1.length;
+      const remainingSlots2 = 5 - team2.length;
+      
+      // Generate combinations of solos to fill remaining slots
+      const soloCombinations = generateCombinations(solos, remainingSlots1);
+      
+      for (const combo of soloCombinations) {
+        const currentTeam1 = [...team1, ...combo];
+        const currentTeam2 = [...team2, ...solos.filter(solo => !combo.includes(solo))];
+        
+        // Calculate average ELO
+        const sum1 = currentTeam1.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0);
+        const sum2 = currentTeam2.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0);
+        const avg1 = sum1 / 5;
+        const avg2 = sum2 / 5;
+        const diff = Math.abs(avg1 - avg2);
+        
+        // Check if within 25 ELO tolerance for balanced match
+        if (diff <= 25) {
+          // Assign roles and calculate satisfaction
+          const team1Roles = assignRoles(currentTeam1);
+          const team2Roles = assignRoles(currentTeam2);
+          
+          const team1Satisfaction = calculateTeamSatisfaction(currentTeam1, team1Roles);
+          const team2Satisfaction = calculateTeamSatisfaction(currentTeam2, team2Roles);
+          
+          const totalRoleScore = team1Satisfaction.totalPoints + team2Satisfaction.totalPoints;
+          
+          if (totalRoleScore < bestRoleScore || 
+              (totalRoleScore === bestRoleScore && diff < bestDiff)) {
+            bestRoleScore = totalRoleScore;
+            bestDiff = diff;
+            bestTeam1 = currentTeam1;
+            bestTeam2 = currentTeam2;
+            bestAvg1 = avg1;
+            bestAvg2 = avg2;
+            usedRoleOptimization = true;
+            usedDuoAssignment = true;
+          }
+        }
+      }
     }
   }
 
-  console.log(`📈 Found ${viableCombinations.length} combinations within 25 Elo tolerance`);
-
-  // If we have viable combinations within 50 Elo, choose the one with best role assignment
-  if (viableCombinations.length > 0) {
-    console.log(`🎯 Selecting best team based on role preferences from ${viableCombinations.length} viable options`);
-    usedRoleOptimization = true;
+  // PHASE 2: If we couldn't balance teams with duos together, break duos and try without duo constraints
+  if (!bestTeam1) {
+    console.log(`⚠️ PHASE 2: Could not balance teams with duos together, breaking duos for this match`);
     
-    for (const { team1, team2, diff, avg1, avg2 } of viableCombinations) {
-      // Assign roles and calculate role satisfaction
-      const team1Roles = assignRoles(team1);
-      const team2Roles = assignRoles(team2);
-      
-      const team1Satisfaction = calculateTeamSatisfaction(team1, team1Roles);
-      const team2Satisfaction = calculateTeamSatisfaction(team2, team2Roles);
-      
-      // Calculate total role score (lower is better)
-      const totalRoleScore = team1Satisfaction.totalPoints + team2Satisfaction.totalPoints;
-      
-      // Update best combination if this one has better role assignment
-      if (totalRoleScore < bestRoleScore || 
-          (totalRoleScore === bestRoleScore && diff < bestDiff)) {
-        bestRoleScore = totalRoleScore;
-        bestDiff = diff;
-        bestTeam1 = team1;
-        bestTeam2 = team2;
-        bestAvg1 = avg1;
-        bestAvg2 = avg2;
-      }
-    }
-    
-    console.log(`✅ Selected team with Elo diff: ${bestDiff.toFixed(2)} and role score: ${bestRoleScore}`);
-    
-  } else {
-    // Fallback to original Elo-based matching if no combinations within 50 Elo
-    console.log(`⚠️ No teams found within 50 Elo tolerance, falling back to pure Elo balancing`);
+    // Treat all players as solos (break duos for this match only)
+    const allPlayers = [...queue];
+    const allTeam1Combinations = generateCombinations(allPlayers, 5);
     
     for (const team1 of allTeam1Combinations) {
-      const team2 = players.filter(player => !team1.includes(player));
+      const team2 = allPlayers.filter(player => !team1.includes(player));
       
-      // Calculate average ELO for both teams
       const sum1 = team1.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0);
       const sum2 = team2.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0);
       const avg1 = sum1 / 5;
       const avg2 = sum2 / 5;
       const diff = Math.abs(avg1 - avg2);
       
-      // Update best combination if this one is better
+      // Try to find teams within 25 ELO first
+      if (diff <= 25) {
+        const team1Roles = assignRoles(team1);
+        const team2Roles = assignRoles(team2);
+        
+        const team1Satisfaction = calculateTeamSatisfaction(team1, team1Roles);
+        const team2Satisfaction = calculateTeamSatisfaction(team2, team2Roles);
+        
+        const totalRoleScore = team1Satisfaction.totalPoints + team2Satisfaction.totalPoints;
+        
+        if (totalRoleScore < bestRoleScore || 
+            (totalRoleScore === bestRoleScore && diff < bestDiff)) {
+          bestRoleScore = totalRoleScore;
+          bestDiff = diff;
+          bestTeam1 = team1;
+          bestTeam2 = team2;
+          bestAvg1 = avg1;
+          bestAvg2 = avg2;
+          usedRoleOptimization = true;
+          usedDuoAssignment = false;
+        }
+      }
+    }
+  }
+
+  // PHASE 3: If still no balanced teams found, use the best available combination
+  if (!bestTeam1) {
+    console.log(`⚠️ PHASE 3: No teams found within 25 ELO, using best available combination`);
+    
+    const allPlayers = [...queue];
+    const allTeam1Combinations = generateCombinations(allPlayers, 5);
+    
+    for (const team1 of allTeam1Combinations) {
+      const team2 = allPlayers.filter(player => !team1.includes(player));
+      
+      const sum1 = team1.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0);
+      const sum2 = team2.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0);
+      const avg1 = sum1 / 5;
+      const avg2 = sum2 / 5;
+      const diff = Math.abs(avg1 - avg2);
+      
       if (diff < bestDiff) {
         bestDiff = diff;
         bestTeam1 = team1;
         bestTeam2 = team2;
         bestAvg1 = avg1;
         bestAvg2 = avg2;
+        usedRoleOptimization = false;
+        usedDuoAssignment = false;
       }
-      
-      // Early exit if we find a perfect balance
-      if (bestDiff === 0) break;
     }
-    
-    console.log(`✅ Best fallback team combination found with ELO difference: ${bestDiff.toFixed(2)}`);
   }
 
+  console.log(`✅ Best team combination found with ELO difference: ${bestDiff.toFixed(2)}`);
   console.log(`🔵 Team 1 Avg ELO: ${bestAvg1.toFixed(2)}, 🔴 Team 2 Avg ELO: ${bestAvg2.toFixed(2)}`);
-  console.log(`🎯 Role optimization ${usedRoleOptimization ? 'APPLIED' : 'NOT APPLIED'} (within 50 Elo tolerance)`);
+  console.log(`🎯 Role optimization: ${usedRoleOptimization ? 'APPLIED' : 'NOT APPLIED'}`);
+  console.log(`🤝 Duos kept together: ${usedDuoAssignment ? 'YES' : 'NO'}`);
+
+  // Notify if duos were broken for balance
+  if (duos.length > 0) {
+    const brokenDuos = [];
+    const intactDuos = [];
+
+    // Check which duos were actually broken (placed on different teams)
+    duos.forEach(duo => {
+      const [player1, player2] = duo;
+      const player1InTeam1 = bestTeam1.includes(player1);
+      const player1InTeam2 = bestTeam2.includes(player1);
+      const player2InTeam1 = bestTeam1.includes(player2);
+      const player2InTeam2 = bestTeam2.includes(player2);
+      
+      // Check if duo was broken (players on different teams)
+      const isBroken = (player1InTeam1 && player2InTeam2) || (player1InTeam2 && player2InTeam1);
+      const isIntact = (player1InTeam1 && player2InTeam1) || (player1InTeam2 && player2InTeam2);
+      
+      if (isBroken) {
+        brokenDuos.push(duo);
+      } else if (isIntact) {
+        intactDuos.push(duo);
+      }
+    });
+
+    // Send notifications for broken duos
+    if (brokenDuos.length > 0) {
+      const brokenDuosList = brokenDuos.map(duo => `<@${duo[0]}> + <@${duo[1]}>`).join(', ');
+      await channel.send({
+        content: `⚠️ **Match Balancing Notice**\nThe following duos were placed on different teams to maintain match balance (within 25 ELO):\n${brokenDuosList}`
+      });
+    }
+
+    // Send notification for intact duos (optional - for clarity)
+    if (intactDuos.length > 0) {
+      const intactDuosList = intactDuos.map(duo => `<@${duo[0]}> + <@${duo[1]}>`).join(', ');
+      console.log(`✅ The following duos remained intact: ${intactDuosList}`);
+      // Optional: Uncomment the line below if you want to also show intact duos in chat
+      // await channel.send({
+      //   content: `✅ The following duos remained together: ${intactDuosList}`
+      // });
+    }
+
+    console.log(`📊 Duo Status: ${brokenDuos.length} broken, ${intactDuos.length} intact`);
+  }
 
   // ---------------- OPTIMIZED ROLE ASSIGNMENT (MINIMIZE PREFERENCE POINTS) ----------------
   function assignRoles(team) {
@@ -6230,389 +6783,425 @@ async function make4funTeams(channel) {
 
 // ---------------- END MATCH ----------------
 async function endMatch(channel, winner, isVoided = false) {
-  // Clean up vote timers
-  cleanupVoteTimers(channel.id);
-  // Get the match for this specific channel
-  const match = matches.get(channel.id);
-  if (!match) {
-    return channel.send("❌ No active match found in this channel.");
-  }
-
-  const { team1, team2, matchChannel, team1VC, team2VC, matchId, originalCategoryName } = match;
-  const guild = channel.guild;
-
-  let historyChannel = guild.channels.cache.find(c => c.name === "match-history" && c.type === 0);
-  if (!historyChannel) {
-    historyChannel = await guild.channels.create({ name: "match-history", type: 0 });
-  }
-
-  const generalChannel = guild.channels.cache.find(c => c.name === "general" && c.type === 0);
-
-  const winners = winner === "1" ? team1 : team2;
-  const losers = winner === "1" ? team2 : team1;
-
-  // Calculate team average Elo
-  const winnersAvgElo = winners.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / winners.length;
-  const losersAvgElo = losers.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / losers.length;
+  const channelId = channel.id;
   
-  // Calculate Elo difference adjustment (balanced system)
-  const eloDifference = winnersAvgElo - losersAvgElo;
-  const eloAdjustment = Math.floor(Math.abs(eloDifference) / 25);
-
-  // Track ELO changes and rank changes
-  const eloChanges = [];
-  const rankChanges = [];
-
-  // Function to calculate streak bonus/penalty (INFINITE - NO CAP)
-  function calculateStreakAdjustment(player, isWinner) {
-    const baseLP = 20;
-    let streakAdjustment = 0;
+  // PREVENT DOUBLE PROCESSING - Check if match is already ending
+  if (endingMatches.has(channelId)) {
+    console.log(`⏳ Match ${channelId} is already being ended, ignoring duplicate call`);
+    return;
+  }
+  
+  // Mark this match as currently ending
+  endingMatches.add(channelId);
+  console.log(`🔒 Locking match ${channelId} to prevent double scoring`);
+  
+  try {
+    cleanupVoteTimers(channelId);
     
-    if (isWinner) {
-      // Win streak logic - INFINITE
-      if (player.streakType === "win") {
-        streakAdjustment = player.currentStreak; // +1 for 2nd win, +2 for 3rd win, +3 for 4th win, etc.
-      } else if (player.streakType === "loss") {
-        // Breaking a loss streak - no adjustment
-        streakAdjustment = 0;
+    // Get the match for this specific channel
+    const match = matches.get(channelId);
+    if (!match) {
+      console.log(`❌ No active match found for channel ${channelId}`);
+      return channel.send("❌ No active match found in this channel.");
+    }
+
+    const { team1, team2, matchChannel, team1VC, team2VC, matchId, originalCategoryName } = match;
+    const guild = channel.guild;
+
+    // CRITICAL: Remove from active matches IMMEDIATELY to prevent further processing
+    matches.delete(channelId);
+    console.log(`✅ Removed match ${matchId} from active matches`);
+
+    let historyChannel = guild.channels.cache.find(c => c.name === "match-history" && c.type === 0);
+    if (!historyChannel) {
+      historyChannel = await guild.channels.create({ name: "match-history", type: 0 });
+    }
+
+    const generalChannel = guild.channels.cache.find(c => c.name === "general" && c.type === 0);
+
+    const winners = winner === "1" ? team1 : team2;
+    const losers = winner === "1" ? team2 : team1;
+
+    console.log(`🎯 Starting scoring for match ${matchId}, winner: Team ${winner}`);
+    console.log(`🔵 Team 1 players: ${team1.join(', ')}`);
+    console.log(`🔴 Team 2 players: ${team2.join(', ')}`);
+
+    // Calculate team average Elo
+    const winnersAvgElo = winners.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / winners.length;
+    const losersAvgElo = losers.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / losers.length;
+    
+    // Calculate Elo difference adjustment (balanced system)
+    const eloDifference = winnersAvgElo - losersAvgElo;
+    const eloAdjustment = Math.floor(Math.abs(eloDifference) / 25);
+
+    // Track ELO changes and rank changes
+    const eloChanges = [];
+    const rankChanges = [];
+
+    // Function to calculate streak bonus/penalty (INFINITE - NO CAP)
+    function calculateStreakAdjustment(player, isWinner) {
+      const baseLP = 20;
+      let streakAdjustment = 0;
+      
+      if (isWinner) {
+        // Win streak logic - INFINITE
+        if (player.streakType === "win") {
+          streakAdjustment = player.currentStreak; // +1 for 2nd win, +2 for 3rd win, +3 for 4th win, etc.
+        } else if (player.streakType === "loss") {
+          // Breaking a loss streak - no adjustment
+          streakAdjustment = 0;
+        } else {
+          // First win - no adjustment
+          streakAdjustment = 0;
+        }
+        
+        return {
+          baseLP: baseLP,
+          streakAdjustment: streakAdjustment,
+          totalLP: baseLP + streakAdjustment
+        };
+        
       } else {
-        // First win - no adjustment
-        streakAdjustment = 0;
+        // Loss streak logic - INFINITE  
+        if (player.streakType === "loss") {
+          streakAdjustment = Math.abs(player.currentStreak); // +1 for 2nd loss, +2 for 3rd loss, +3 for 4th loss, etc.
+        } else if (player.streakType === "win") {
+          // Breaking a win streak - no adjustment
+          streakAdjustment = 0;
+        } else {
+          // First loss - no adjustment
+          streakAdjustment = 0;
+        }
+        
+        // For losses: baseLP + streakAdjustment, but make it negative
+        const totalLoss = baseLP + streakAdjustment;
+        
+        return {
+          baseLP: baseLP,
+          streakAdjustment: streakAdjustment,
+          totalLP: -totalLoss // Always negative for losses
+        };
+      }
+    }
+
+    // Update winners and track changes
+    winners.forEach((id) => {
+      const p = ensurePlayer(id);
+      const oldIHP = getIHP(p);
+      const oldRank = p.rank;
+      const oldDivision = p.division;
+      const oldLP = p.lp;
+
+      console.log(`📈 Processing winner ${id}: old IHP = ${oldIHP}, wins = ${p.wins}, streak = ${p.currentStreak}`);
+
+      // Calculate streak adjustment
+      const lpCalculation = calculateStreakAdjustment(p, true);
+      
+      // === MODIFIED ELO DIFFERENCE ADJUSTMENT FOR WINNERS ===
+      // If winners have higher Elo, they get less LP (negative adjustment)
+      // If winners have lower Elo, they get more LP (positive adjustment)
+      let eloDiffLP;
+      if (eloDifference > 0) {
+        // Winners are higher rated - they gain 1 less LP per 25 Elo difference
+        eloDiffLP = -eloAdjustment;
+      } else {
+        // Winners are lower rated - they gain 1 more LP per 25 Elo difference  
+        eloDiffLP = eloAdjustment;
       }
       
-      return {
-        baseLP: baseLP,
-        streakAdjustment: streakAdjustment,
-        totalLP: baseLP + streakAdjustment
-      };
-      
-    } else {
-      // Loss streak logic - INFINITE  
-      if (player.streakType === "loss") {
-        streakAdjustment = Math.abs(player.currentStreak); // +1 for 2nd loss, +2 for 3rd loss, +3 for 4th loss, etc.
-      } else if (player.streakType === "win") {
-        // Breaking a win streak - no adjustment
-        streakAdjustment = 0;
+      // Update streak
+      if (p.streakType === "win") {
+        p.currentStreak += 1;
       } else {
-        // First loss - no adjustment
-        streakAdjustment = 0;
+        p.currentStreak = 1;
+        p.streakType = "win";
+      }
+
+      p.wins++;
+      p.lp += lpCalculation.totalLP + eloDiffLP;
+
+      const newIHP = getIHP(p);
+      const newStats = IHPToRank(newIHP);
+      Object.assign(p, newStats);
+
+      // Track ELO change
+      eloChanges.push({
+        id,
+        oldIHP,
+        newIHP,
+        change: newIHP - oldIHP,
+        isWinner: true,
+        oldRank,
+        oldDivision,
+        oldLP,
+        newRank: p.rank,
+        newDivision: p.division,
+        newLP: p.lp,
+        streakBonus: lpCalculation.streakAdjustment,
+        baseLP: lpCalculation.baseLP,
+        totalLP: lpCalculation.totalLP + eloDiffLP,
+        eloAdjustment: eloDiffLP
+      });
+
+      // Check for rank changes
+      if (p.rank !== oldRank || p.division !== oldDivision) {
+        rankChanges.push({
+          id,
+          oldRank,
+          oldDivision,
+          newRank: p.rank,
+          newDivision: p.division,
+          isPromotion: newIHP > oldIHP
+        });
+      }
+    });
+
+    // Update losers and track changes
+    losers.forEach((id) => {
+      const p = ensurePlayer(id);
+      const oldIHP = getIHP(p);
+      const oldRank = p.rank;
+      const oldDivision = p.division;
+      const oldLP = p.lp;
+
+      console.log(`📉 Processing loser ${id}: old IHP = ${oldIHP}, losses = ${p.losses}, streak = ${p.currentStreak}`);
+
+      // Calculate streak adjustment
+      const lpCalculation = calculateStreakAdjustment(p, false);
+      
+      // === MODIFIED ELO DIFFERENCE ADJUSTMENT FOR LOSERS ===
+      // If losers have higher Elo, they lose less LP (positive adjustment - since base is negative)
+      // If losers have lower Elo, they lose more LP (negative adjustment - making the loss worse)
+      let eloDiffLP;
+      if (eloDifference > 0) {
+        // Losers are lower rated - they lose 1 more LP per 25 Elo difference
+        eloDiffLP = -eloAdjustment;
+      } else {
+        // Losers are higher rated - they lose 1 less LP per 25 Elo difference
+        eloDiffLP = eloAdjustment;
       }
       
-      // For losses: baseLP + streakAdjustment, but make it negative
-      const totalLoss = baseLP + streakAdjustment;
-      
-      return {
-        baseLP: baseLP,
-        streakAdjustment: streakAdjustment,
-        totalLP: -totalLoss // Always negative for losses
-      };
-    }
-  }
+      // Update streak
+      if (p.streakType === "loss") {
+        p.currentStreak -= 1; // Goes more negative
+      } else {
+        p.currentStreak = -1;
+        p.streakType = "loss";
+      }
 
-  // Update winners and track changes
-  winners.forEach((id) => {
-    const p = ensurePlayer(id);
-    const oldIHP = getIHP(p);
-    const oldRank = p.rank;
-    const oldDivision = p.division;
-    const oldLP = p.lp;
+      p.losses++;
+      p.lp += lpCalculation.totalLP + eloDiffLP; // This includes both streak adjustment and Elo difference adjustment
 
-    // Calculate streak adjustment
-    const lpCalculation = calculateStreakAdjustment(p, true);
-    
-    // === MODIFIED ELO DIFFERENCE ADJUSTMENT FOR WINNERS ===
-    // If winners have higher Elo, they get less LP (negative adjustment)
-    // If winners have lower Elo, they get more LP (positive adjustment)
-    let eloDiffLP;
-    if (eloDifference > 0) {
-      // Winners are higher rated - they gain 1 less LP per 25 Elo difference
-      eloDiffLP = -eloAdjustment;
-    } else {
-      // Winners are lower rated - they gain 1 more LP per 25 Elo difference  
-      eloDiffLP = eloAdjustment;
-    }
-    
-    // Update streak
-    if (p.streakType === "win") {
-      p.currentStreak += 1;
-    } else {
-      p.currentStreak = 1;
-      p.streakType = "win";
-    }
+      const newIHP = getIHP(p);
+      const newStats = IHPToRank(newIHP);
+      Object.assign(p, newStats);
 
-    p.wins++;
-    p.lp += lpCalculation.totalLP + eloDiffLP;
-
-    const newIHP = getIHP(p);
-    const newStats = IHPToRank(newIHP);
-    Object.assign(p, newStats);
-
-    // Track ELO change
-    eloChanges.push({
-      id,
-      oldIHP,
-      newIHP,
-      change: newIHP - oldIHP,
-      isWinner: true,
-      oldRank,
-      oldDivision,
-      oldLP,
-      newRank: p.rank,
-      newDivision: p.division,
-      newLP: p.lp,
-      streakBonus: lpCalculation.streakAdjustment,
-      baseLP: lpCalculation.baseLP,
-      totalLP: lpCalculation.totalLP + eloDiffLP,
-      eloAdjustment: eloDiffLP
-    });
-
-    // Check for rank changes
-    if (p.rank !== oldRank || p.division !== oldDivision) {
-      rankChanges.push({
+      // Track ELO change
+      eloChanges.push({
         id,
+        oldIHP,
+        newIHP,
+        change: newIHP - oldIHP,
+        isWinner: false,
         oldRank,
         oldDivision,
+        oldLP,
         newRank: p.rank,
         newDivision: p.division,
-        isPromotion: newIHP > oldIHP
+        newLP: p.lp,
+        streakPenalty: lpCalculation.streakAdjustment,
+        baseLP: lpCalculation.baseLP,
+        totalLP: lpCalculation.totalLP + eloDiffLP,
+        eloAdjustment: eloDiffLP
       });
-    }
-  });
 
-  // Update losers and track changes
-  losers.forEach((id) => {
-    const p = ensurePlayer(id);
-    const oldIHP = getIHP(p);
-    const oldRank = p.rank;
-    const oldDivision = p.division;
-    const oldLP = p.lp;
-
-    // Calculate streak adjustment
-    const lpCalculation = calculateStreakAdjustment(p, false);
-    
-    // === MODIFIED ELO DIFFERENCE ADJUSTMENT FOR LOSERS ===
-    // If losers have higher Elo, they lose less LP (positive adjustment - since base is negative)
-    // If losers have lower Elo, they lose more LP (negative adjustment - making the loss worse)
-    let eloDiffLP;
-    if (eloDifference > 0) {
-      // Losers are lower rated - they lose 1 more LP per 25 Elo difference
-      eloDiffLP = -eloAdjustment;
-    } else {
-      // Losers are higher rated - they lose 1 less LP per 25 Elo difference
-      eloDiffLP = eloAdjustment;
-    }
-    
-    // Update streak
-    if (p.streakType === "loss") {
-      p.currentStreak -= 1; // Goes more negative
-    } else {
-      p.currentStreak = -1;
-      p.streakType = "loss";
-    }
-
-    p.losses++;
-    p.lp += lpCalculation.totalLP + eloDiffLP; // This includes both streak adjustment and Elo difference adjustment
-
-    const newIHP = getIHP(p);
-    const newStats = IHPToRank(newIHP);
-    Object.assign(p, newStats);
-
-    // Track ELO change
-    eloChanges.push({
-      id,
-      oldIHP,
-      newIHP,
-      change: newIHP - oldIHP,
-      isWinner: false,
-      oldRank,
-      oldDivision,
-      oldLP,
-      newRank: p.rank,
-      newDivision: p.division,
-      newLP: p.lp,
-      streakPenalty: lpCalculation.streakAdjustment,
-      baseLP: lpCalculation.baseLP,
-      totalLP: lpCalculation.totalLP + eloDiffLP,
-      eloAdjustment: eloDiffLP
+      // Check for rank changes
+      if (p.rank !== oldRank || p.division !== oldDivision) {
+        rankChanges.push({
+          id,
+          oldRank,
+          oldDivision,
+          newRank: p.rank,
+          newDivision: p.division,
+          isPromotion: newIHP > oldIHP
+        });
+      }
     });
 
-    // Check for rank changes
-    if (p.rank !== oldRank || p.division !== oldDivision) {
-      rankChanges.push({
-        id,
-        oldRank,
-        oldDivision,
-        newRank: p.rank,
-        newDivision: p.division,
-        isPromotion: newIHP > oldIHP
-      });
-    }
-  });
-
-  const matchHistory = await loadMatchHistory();
-  const matchRecord = {
-    id: matchId, // Use the sequential ID instead of channel ID
-    timestamp: Date.now(),
-    team1: team1,
-    team2: team2,
-    winner: winner,
-    eloChanges: eloChanges.map(change => ({
-      id: change.id,
-      oldIHP: change.oldIHP,
-      newIHP: change.newIHP,
-      change: change.change,
-      isWinner: change.isWinner,
-      streakBonus: change.streakBonus,
-      streakPenalty: change.streakPenalty,
-      baseLP: change.baseLP,
-      totalLP: change.totalLP,
-      eloAdjustment: change.eloAdjustment
-    })),
-    teamElo: {
-      winnersAvgElo: Math.round(winnersAvgElo),
-      losersAvgElo: Math.round(losersAvgElo),
-      eloDifference: Math.round(eloDifference),
-      eloAdjustment: eloAdjustment
-    },
-    voided: isVoided
-  };
-  
-  matchHistory.push(matchRecord);
-  await saveMatchHistory(matchHistory);
-
-  saveData();
-
-  // Calculate team average Elo for display
-  const team1AvgElo = Math.round(team1.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / team1.length);
-  const team2AvgElo = Math.round(team2.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / team2.length);
-
-  // Create enhanced history embed with ELO changes and streak info
-  const team1Players = team1.map(id => `<@${id}>`).join(", ") || "—";
-  const team2Players = team2.map(id => `<@${id}>`).join(", ") || "—";
-
-  // Build ELO changes display WITHOUT streak information
-  const eloChangesText = eloChanges.map(change => {
-    const changeSymbol = change.change >= 0 ? "🟢" : "🔴";
-    const changeText = change.change >= 0 ? `+${change.change}` : `${change.change}`;
-    const winLoss = change.isWinner ? "🏆" : "💀";
+    const matchHistory = await loadMatchHistory();
+    const matchRecord = {
+      id: matchId, // Use the sequential ID instead of channel ID
+      timestamp: Date.now(),
+      team1: team1,
+      team2: team2,
+      winner: winner,
+      eloChanges: eloChanges.map(change => ({
+        id: change.id,
+        oldIHP: change.oldIHP,
+        newIHP: change.newIHP,
+        change: change.change,
+        isWinner: change.isWinner,
+        streakBonus: change.streakBonus,
+        streakPenalty: change.streakPenalty,
+        baseLP: change.baseLP,
+        totalLP: change.totalLP,
+        eloAdjustment: change.eloAdjustment
+      })),
+      teamElo: {
+        winnersAvgElo: Math.round(winnersAvgElo),
+        losersAvgElo: Math.round(losersAvgElo),
+        eloDifference: Math.round(eloDifference),
+        eloAdjustment: eloAdjustment
+      },
+      voided: isVoided
+    };
     
-    const oldRankDisplay = change.oldDivision ? `${change.oldRank} ${change.oldDivision}` : change.oldRank;
-    const newRankDisplay = change.newDivision ? `${change.newRank} ${change.newDivision}` : change.newRank;
-    
-    return `${winLoss} <@${change.id}>: ${oldRankDisplay} ${change.oldLP}LP → ${newRankDisplay} ${change.newLP}LP (${changeSymbol} ${changeText} ELO)`;
-  }).join('\n');
+    matchHistory.push(matchRecord);
+    await saveMatchHistory(matchHistory);
 
-  // Calculate team average Elo for display - USE PRE-MATCH ELO
-  const team1PreMatchAvg = Math.round(team1.reduce((sum, id) => {
-    const playerChange = eloChanges.find(change => change.id === id);
-    return sum + (playerChange ? playerChange.oldIHP : getIHP(ensurePlayer(id)));
-  }, 0) / team1.length);
+    saveData();
 
-  const team2PreMatchAvg = Math.round(team2.reduce((sum, id) => {
-    const playerChange = eloChanges.find(change => change.id === id);
-    return sum + (playerChange ? playerChange.oldIHP : getIHP(ensurePlayer(id)));
-  }, 0) / team2.length);
+    // Calculate team average Elo for display
+    const team1AvgElo = Math.round(team1.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / team1.length);
+    const team2AvgElo = Math.round(team2.reduce((sum, id) => sum + getIHP(ensurePlayer(id)), 0) / team2.length);
 
-  // Elo difference information
-  const eloDifferenceInfo = `**Elo Difference:** ${Math.round(eloDifference)}`;
+    // Create enhanced history embed with ELO changes and streak info
+    const team1Players = team1.map(id => `<@${id}>`).join(", ") || "—";
+    const team2Players = team2.map(id => `<@${id}>`).join(", ") || "—";
 
-  // ADD MATCH ID TO THE EMBED TITLE AND DESCRIPTION
-  const embed = new EmbedBuilder()
-    .setTitle(`📜 Match History - ID: ${matchId}`)
-    .setDescription(`**Match ID:** ${matchId}\n**Winner:** ${winner === "1" ? "🟦 Team 1 (Blue)" : "🟥 Team 2 (Red)"}\n${eloDifferenceInfo}`)
-    .addFields(
-      { name: `🟦 Team 1 (Blue) - Avg Elo: ${team1PreMatchAvg}`, value: team1Players, inline: false },
-      { name: `🟥 Team 2 (Red) - Avg Elo: ${team2PreMatchAvg}`, value: team2Players, inline: false },
-      { name: "📈 ELO Changes", value: eloChangesText || "No changes", inline: false }
-    )
-    .setColor(winner === "1" ? 0x3498db : 0xe74c3c)
-    .setTimestamp()
-    .setFooter({ text: `Match ID: ${matchId} | Use !changewinner or !voidmatch with this ID` });
-
-  // Send main history embed
-  await historyChannel.send({ embeds: [embed] });
-
-  // Send streak notifications
-  const streakNotifications = [];
-  
-  winners.forEach(id => {
-    const player = ensurePlayer(id);
-    if (player.currentStreak >= 2) {
-      streakNotifications.push(`🔥 <@${id}> is on a ${player.currentStreak} game win streak!`);
-    }
-  });
-  
-  losers.forEach(id => {
-    const player = ensurePlayer(id);
-    if (player.currentStreak <= -2) {
-      streakNotifications.push(`😔 <@${id}> is on a ${Math.abs(player.currentStreak)} game loss streak.`);
-    }
-  });
-  
-  if (streakNotifications.length > 0) {
-    const streakEmbed = new EmbedBuilder()
-      .setTitle("📊 Streak Updates")
-      .setDescription(streakNotifications.join('\n'))
-      .setColor(0xffa500)
-      .setTimestamp();
-    
-    await historyChannel.send({ embeds: [streakEmbed] });
-  }
-
-  // Send rank promotions/demotions to both #history AND #general if any occurred
-  if (rankChanges.length > 0) {
-    const rankChangeText = rankChanges.map(change => {
-      const oldDisplay = change.oldDivision ? `${change.oldRank} ${change.oldDivision}` : change.oldRank;
-      const newDisplay = change.newDivision ? `${change.newRank} ${change.newDivision}` : change.newRank;
-      const emoji = change.isPromotion ? "🎉" : "📉";
-      const action = change.isPromotion ? "PROMOTED" : "DEMOTED";
+    // Build ELO changes display WITHOUT streak information
+    const eloChangesText = eloChanges.map(change => {
+      const changeSymbol = change.change >= 0 ? "🟢" : "🔴";
+      const changeText = change.change >= 0 ? `+${change.change}` : `${change.change}`;
+      const winLoss = change.isWinner ? "🏆" : "💀";
       
-      return `${emoji} <@${change.id}> ${action}: **${oldDisplay}** → **${newDisplay}**`;
+      const oldRankDisplay = change.oldDivision ? `${change.oldRank} ${change.oldDivision}` : change.oldRank;
+      const newRankDisplay = change.newDivision ? `${change.newRank} ${change.newDivision}` : change.newRank;
+      
+      return `${winLoss} <@${change.id}>: ${oldRankDisplay} ${change.oldLP}LP → ${newRankDisplay} ${change.newLP}LP (${changeSymbol} ${changeText} ELO)`;
     }).join('\n');
 
-    const rankChangeEmbed = new EmbedBuilder()
-      .setTitle(rankChanges.some(rc => rc.isPromotion) ? `🏆 Rank Promotions - Match ${matchId}` : `📉 Rank Changes - Match ${matchId}`)
-      .setDescription(rankChangeText)
-      .setColor(rankChanges.some(rc => rc.isPromotion) ? 0x00ff00 : 0xff9900)
+    // Calculate team average Elo for display - USE PRE-MATCH ELO
+    const team1PreMatchAvg = Math.round(team1.reduce((sum, id) => {
+      const playerChange = eloChanges.find(change => change.id === id);
+      return sum + (playerChange ? playerChange.oldIHP : getIHP(ensurePlayer(id)));
+    }, 0) / team1.length);
+
+    const team2PreMatchAvg = Math.round(team2.reduce((sum, id) => {
+      const playerChange = eloChanges.find(change => change.id === id);
+      return sum + (playerChange ? playerChange.oldIHP : getIHP(ensurePlayer(id)));
+    }, 0) / team2.length);
+
+    // Elo difference information
+    const eloDifferenceInfo = `**Elo Difference:** ${Math.round(eloDifference)}`;
+
+    // ADD MATCH ID TO THE EMBED TITLE AND DESCRIPTION
+    const embed = new EmbedBuilder()
+      .setTitle(`📜 Match History - ID: ${matchId}`)
+      .setDescription(`**Match ID:** ${matchId}\n**Winner:** ${winner === "1" ? "🟦 Team 1 (Blue)" : "🟥 Team 2 (Red)"}\n${eloDifferenceInfo}`)
+      .addFields(
+        { name: `🟦 Team 1 (Blue) - Avg Elo: ${team1PreMatchAvg}`, value: team1Players, inline: false },
+        { name: `🟥 Team 2 (Red) - Avg Elo: ${team2PreMatchAvg}`, value: team2Players, inline: false },
+        { name: "📈 ELO Changes", value: eloChangesText || "No changes", inline: false }
+      )
+      .setColor(winner === "1" ? 0x3498db : 0xe74c3c)
       .setTimestamp()
-      .setFooter({ text: `Match ID: ${matchId}` });
+      .setFooter({ text: `Match ID: ${matchId} | Use !changewinner or !voidmatch with this ID` });
 
-    // Send to history channel
-    await historyChannel.send({ embeds: [rankChangeEmbed] });
-  }
+    // Send main history embed
+    await historyChannel.send({ embeds: [embed] });
 
-  // ✅ Send confirmation message BEFORE deleting channels - NOW INCLUDES MATCH ID
-  await channel.send(`✅ Match ${matchId} ended! ${winner === "1" ? "🟦 Team 1 (Blue)" : "🟥 Team 2 (Red)"} wins!`);
-
-  // Restore the original category name
-  try {
-    const category = matchChannel.parent;
-    if (category && category.type === 4) {
-      await category.setName(originalCategoryName);
-      console.log(`✅ Restored category name to "${originalCategoryName}"`);
+    // Send streak notifications
+    const streakNotifications = [];
+    
+    winners.forEach(id => {
+      const player = ensurePlayer(id);
+      if (player.currentStreak >= 2) {
+        streakNotifications.push(`🔥 <@${id}> is on a ${player.currentStreak} game win streak!`);
+      }
+    });
+    
+    losers.forEach(id => {
+      const player = ensurePlayer(id);
+      if (player.currentStreak <= -2) {
+        streakNotifications.push(`😔 <@${id}> is on a ${Math.abs(player.currentStreak)} game loss streak.`);
+      }
+    });
+    
+    if (streakNotifications.length > 0) {
+      const streakEmbed = new EmbedBuilder()
+        .setTitle("📊 Streak Updates")
+        .setDescription(streakNotifications.join('\n'))
+        .setColor(0xffa500)
+        .setTimestamp();
+      
+      await historyChannel.send({ embeds: [streakEmbed] });
     }
-  } catch (err) {
-    console.error("Error restoring category name:", err);
-  }
 
-  // Delete match channels with proper error handling
-  try {
-    // Delete voice channels first
-    if (team1VC) await team1VC.delete().catch(console.error);
-    if (team2VC) await team2VC.delete().catch(console.error);
-    
-    // Delete the match text channel
-    if (matchChannel) await matchChannel.delete().catch(console.error);
-    
-  } catch (err) {
-    console.error("Error deleting match channels:", err);
-  }
+    // Send rank promotions/demotions to both #history AND #general if any occurred
+    if (rankChanges.length > 0) {
+      const rankChangeText = rankChanges.map(change => {
+        const oldDisplay = change.oldDivision ? `${change.oldRank} ${change.oldDivision}` : change.oldRank;
+        const newDisplay = change.newDivision ? `${change.newRank} ${change.newDivision}` : change.newRank;
+        const emoji = change.isPromotion ? "🎉" : "📉";
+        const action = change.isPromotion ? "PROMOTED" : "DEMOTED";
+        
+        return `${emoji} <@${change.id}> ${action}: **${oldDisplay}** → **${newDisplay}**`;
+      }).join('\n');
 
-  // Remove this match from active matches
-  matches.delete(channel.id);
-  
-  // Update leaderboard after match ends
-  await updateLeaderboardChannel(guild);
+      const rankChangeEmbed = new EmbedBuilder()
+        .setTitle(rankChanges.some(rc => rc.isPromotion) ? `🏆 Rank Promotions - Match ${matchId}` : `📉 Rank Changes - Match ${matchId}`)
+        .setDescription(rankChangeText)
+        .setColor(rankChanges.some(rc => rc.isPromotion) ? 0x00ff00 : 0xff9900)
+        .setTimestamp()
+        .setFooter({ text: `Match ID: ${matchId}` });
+
+      // Send to history channel
+      await historyChannel.send({ embeds: [rankChangeEmbed] });
+    }
+
+    // ✅ Send confirmation message BEFORE deleting channels - NOW INCLUDES MATCH ID
+    await channel.send(`✅ Match ${matchId} ended! ${winner === "1" ? "🟦 Team 1 (Blue)" : "🟥 Team 2 (Red)"} wins!`);
+
+    // Restore the original category name
+    try {
+      const category = matchChannel.parent;
+      if (category && category.type === 4) {
+        await category.setName(originalCategoryName);
+        console.log(`✅ Restored category name to "${originalCategoryName}"`);
+      }
+    } catch (err) {
+      console.error("Error restoring category name:", err);
+    }
+
+    // Delete match channels with proper error handling
+    try {
+      // Delete voice channels first
+      if (team1VC) await team1VC.delete().catch(console.error);
+      if (team2VC) await team2VC.delete().catch(console.error);
+      
+      // Delete the match text channel
+      if (matchChannel) await matchChannel.delete().catch(console.error);
+      
+    } catch (err) {
+      console.error("Error deleting match channels:", err);
+    }
+
+    // Update leaderboard after match ends
+    await updateLeaderboardChannel(guild);
+
+    console.log(`✅ Successfully ended match ${matchId}`);
+    
+  } catch (error) {
+    console.error(`❌ Error ending match for channel ${channelId}:`, error);
+    // Ensure we clean up even on error
+    matches.delete(channelId);
+    cleanupVoteTimers(channelId);
+  } finally {
+    // Always remove from ending matches
+    endingMatches.delete(channelId);
+    console.log(`🔓 Unlocked match ${channelId}`);
+  }
 }
 
 async function end4funMatch(channel, winner) {
@@ -6689,13 +7278,10 @@ async function end4funMatch(channel, winner) {
 
   // Remove from active matches
   matches4fun.delete(channel.id);
-  
-  // Update 4fun leaderboard
-  await update4funLeaderboardChannel(guild);
 }
 
 // ---------------- READY ----------------
-const MAIN_GUILD_ID = "1423242905602101310";
+const MAIN_GUILD_ID = "1421221145532956722";
 
 client.once("ready", async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
@@ -6742,8 +7328,6 @@ client.once("ready", async () => {
   await post4funQueueMessage(queue4funChannel);
   await postQueueMessage(queueChannel);
 
-  // 4fun leaderboard setup
-  await update4funLeaderboardChannel(guild);
   await updateLeaderboardChannel(guild);
   
   console.log('✅ Bot fully initialized with data loaded');
