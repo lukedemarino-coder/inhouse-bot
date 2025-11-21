@@ -6808,10 +6808,6 @@ async function endMatch(channel, winner, isVoided = false) {
     const { team1, team2, matchChannel, team1VC, team2VC, matchId, originalCategoryName } = match;
     const guild = channel.guild;
 
-    // CRITICAL: Remove from active matches IMMEDIATELY to prevent further processing
-    matches.delete(channelId);
-    console.log(`✅ Removed match ${matchId} from active matches`);
-
     let historyChannel = guild.channels.cache.find(c => c.name === "match-history" && c.type === 0);
     if (!historyChannel) {
       historyChannel = await guild.channels.create({ name: "match-history", type: 0 });
@@ -7159,6 +7155,12 @@ async function endMatch(channel, winner, isVoided = false) {
       // Send to history channel
       await historyChannel.send({ embeds: [rankChangeEmbed] });
     }
+
+    // Remove from active matches IMMEDIATELY to prevent further processing
+    matches.delete(channelId);
+    console.log(`✅ Removed match ${matchId} from active matches`);
+
+    saveData();
 
     // ✅ Send confirmation message BEFORE deleting channels - NOW INCLUDES MATCH ID
     await channel.send(`✅ Match ${matchId} ended! ${winner === "1" ? "🟦 Team 1 (Blue)" : "🟥 Team 2 (Red)"} wins!`);
