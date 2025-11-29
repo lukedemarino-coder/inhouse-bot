@@ -24,7 +24,8 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildVoiceStates, // <-- required for voiceStateUpdate
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildMembers, // <-- required for voiceStateUpdate
   ],
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
@@ -53,19 +54,13 @@ async function connectDB() {
 const DATA_FILE = "playerData.json";
 const QUEUE_SIZE = 10;
 const MATCH_HISTORY_FILE = "matchHistory.json";
-const QUEUE4FUN_SIZE = 10;
-const FUN_POINTS_PER_GAME = 50;
 const DUO_REQUEST_EXPIRY = 5 * 60 * 1000; // Duo request expiration time (5 minutes)
 
 let queue = [];
-let queue4fun = [];
 let queueMessage;
-let queueMessage4fun;
 let leaderboardMessage;
 let matches = new Map();
-let matches4fun = new Map();
 let activeReadyCheck = null;
-let active4funReadyCheck = null;
 let queueEnabled = true;
 let bannedUsers = new Set();
 let requestCount = 0;
@@ -161,15 +156,6 @@ function ensurePlayer(id) {
       streakType: "none",
       dmNotifications: true,
       duoPartner: null, // Add normal queue duo partner
-      fun: {
-        points: 0,
-        wins: 0,
-        losses: 0,
-        matchesPlayed: 0,
-        hiddenMMR: 0,
-        dmNotifications: true,
-        duoPartner: null
-      }
     };
   }
   
@@ -185,23 +171,8 @@ function ensurePlayer(id) {
   if (player.streakType === undefined) player.streakType = "none";
   if (player.dmNotifications === undefined) player.dmNotifications = true;
   if (player.duoPartner === undefined) player.duoPartner = null;
-  
-  // Ensure 4fun stats exist
-  if (!player.fun) {
-    player.fun = {
-      points: 0,
-      wins: 0,
-      losses: 0,
-      matchesPlayed: 0,
-      hiddenMMR: 0,
-      dmNotifications: true
-    };
-  }
-  
-  // Ensure 4fun dmNotifications exists
-  if (player.fun.dmNotifications === undefined) player.fun.dmNotifications = true;
-  
-  return playerData[id];
+
+  return player;
 }
 
 // ---------------- MATCH ID GENERATION ----------------
@@ -384,7 +355,20 @@ async function loadData() {
                 console.log('📥 Loaded data from MongoDB');
                 
                 // Convert arrays back to Sets
-                if (data._bannedUsers) bannedUsers = new Set(data._bannedUsers);
+                if (data._bannedUsers) {
+                  // Handle migration from old Set format to new Map format
+                  if (Array.isArray(data._bannedUsers) && data._bannedUsers.length > 0) {
+                    if (Array.isArray(data._bannedUsers[0])) {
+                      // New format: array of [key, value] pairs
+                      bannedUsers = new Map(data._bannedUsers);
+                    } else {
+                      // Old format: array of user IDs (permanent bans)
+                      bannedUsers = new Map(data._bannedUsers.map(id => [id, 0]));
+                    }
+                  }
+                } else {
+                  bannedUsers = new Map();
+                }
                 if (data._userBlocks) {
                     userBlocks = new Map(Object.entries(data._userBlocks).map(([k, v]) => [k, new Set(v)]));
                 }
@@ -448,7 +432,7 @@ async function saveData() {
     saveDataTimeout = setTimeout(async () => {
         const dataToSave = { 
             ...playerData, 
-            _bannedUsers: Array.from(bannedUsers),
+            _bannedUsers: Array.from(bannedUsers.entries()),
             _timeoutTracking: playerData._timeoutTracking,
             _userBlocks: Object.fromEntries(Array.from(userBlocks.entries()).map(([k, v]) => [k, Array.from(v)])),
             _smurfRefunds: {
@@ -500,12 +484,12 @@ const ROLES = [
 
 // ---------------- HELPER FUNCTIONS ----------------
 // Manages the vote status message
-async function updateOrCreateVoteMessage(channel, match, is4fun = false) {
+async function updateOrCreateVoteMessage(channel, match) {
   const team1Votes = match.votes.team1.size;
   const team2Votes = match.votes.team2.size;
   const totalVotes = team1Votes + team2Votes;
   
-  const voteMessageContent = `🗳️ **${is4fun ? '4Fun Match' : 'Match'} Voting**\n\n` +
+  const voteMessageContent = `🗳️ **Match Voting**\n\n` +
     `**Current Vote Count:**\n` +
     `🔵 Team 1: ${team1Votes} votes\n` +
     `🔴 Team 2: ${team2Votes} votes\n` +
@@ -514,16 +498,15 @@ async function updateOrCreateVoteMessage(channel, match, is4fun = false) {
 
   const voteButtonsRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`report_${is4fun ? '4fun_' : ''}win_1`)
+      .setCustomId(`report_win_1`)
       .setLabel('🏆 Team 1 Won')
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
-      .setCustomId(`report_${is4fun ? '4fun_' : ''}win_2`)
+      .setCustomId(`report_win_2`)
       .setLabel('🏆 Team 2 Won')
       .setStyle(ButtonStyle.Success)
   );
 
-  // Try to update existing vote message first
   if (match.voteMessageId) {
     try {
       const existingMessage = await channel.messages.fetch(match.voteMessageId);
@@ -532,15 +515,13 @@ async function updateOrCreateVoteMessage(channel, match, is4fun = false) {
         components: [voteButtonsRow]
       });
       console.log(`✅ Updated existing vote message ${match.voteMessageId}`);
-      return; // Successfully updated
+      return;
     } catch (error) {
-      // Message was deleted or not found
       console.log('❌ Vote message not found, creating new one');
       match.voteMessageId = null;
     }
   }
 
-  // ALWAYS create a new vote message when flood is detected or initial timer expires
   console.log(`🆕 Creating new vote message in channel ${channel.id}`);
   const newVoteMessage = await channel.send({
     content: voteMessageContent,
@@ -550,70 +531,59 @@ async function updateOrCreateVoteMessage(channel, match, is4fun = false) {
   console.log(`✅ Created new vote message with ID: ${newVoteMessage.id}`);
 }
 
-// Add this new function to handle the initial 20-minute delay and flood monitoring
-async function startVoteMessageFloodMonitoring(channel, match, is4fun = false) {
+// Handle the initial 20-minute delay and flood monitoring
+async function startVoteMessageFloodMonitoring(channel, match) {
   const channelId = channel.id;
   
-  // Clear any existing timer for this channel
   if (voteMessageTimers.has(channelId)) {
     clearTimeout(voteMessageTimers.get(channelId));
   }
   
   console.log(`⏰ Starting 20-minute timer for vote message in channel ${channelId}`);
   
-  // Set initial 20-minute timer
   const initialTimer = setTimeout(async () => {
     console.log(`⏰ 20 minutes passed, sending initial vote message for channel ${channelId}`);
     
-    // Check if match still exists
-    const matchMap = is4fun ? matches4fun : matches;
-    if (!matchMap.has(channelId)) {
+    if (!matches.has(channelId)) {
       console.log(`❌ Match ended before 20-minute timer, cancelling vote message`);
       return;
     }
     
-    await updateOrCreateVoteMessage(channel, match, is4fun);
+    await updateOrCreateVoteMessage(channel, match);
     
-    // Start periodic flood checks after initial message
-    startPeriodicFloodCheck(channel, match, is4fun);
-  }, 20 * 60 * 1000); // 20 minutes
+    startPeriodicFloodCheck(channel, match);
+  }, 20 * 60 * 1000);
   
   voteMessageTimers.set(channelId, initialTimer);
 }
 
 // Periodically check for flood conditions
-async function startPeriodicFloodCheck(channel, match, is4fun = false) {
+async function startPeriodicFloodCheck(channel, match) {
   const channelId = channel.id;
   
   const checkFlood = async () => {
-    // Check if match still exists
-    const matchMap = is4fun ? matches4fun : matches;
-    if (!matchMap.has(channelId)) {
+    if (!matches.has(channelId)) {
       console.log(`❌ Match no longer exists in channel ${channelId}, stopping flood check`);
       return;
     }
     
     if (!match.voteMessageId) {
       console.log(`⚠️ No vote message ID for channel ${channelId}, creating one`);
-      await updateOrCreateVoteMessage(channel, match, is4fun);
+      await updateOrCreateVoteMessage(channel, match);
     } else {
       try {
-        // Fetch recent messages to check if vote buttons are visible
         const messages = await channel.messages.fetch({ limit: 50 });
         const messageArray = Array.from(messages.values());
         
-        // Find the vote message in the recent messages
         const voteMessageIndex = messageArray.findIndex(msg => msg.id === match.voteMessageId);
         
-        // If vote message is not in the last 20 messages, it's considered "flooded"
         const floodThreshold = 20;
         const isFlooded = voteMessageIndex === -1 || voteMessageIndex >= floodThreshold;
         
         if (isFlooded) {
           console.log(`🌊 Chat flooded in channel ${channelId}, vote message index: ${voteMessageIndex}, resending vote message`);
-          // Force create a new message by nullifying the old ID
           match.voteMessageId = null;
-          await updateOrCreateVoteMessage(channel, match, is4fun);
+          await updateOrCreateVoteMessage(channel, match);
         } else {
           console.log(`✅ Vote message visible at index ${voteMessageIndex} in channel ${channelId}`);
         }
@@ -622,13 +592,11 @@ async function startPeriodicFloodCheck(channel, match, is4fun = false) {
       }
     }
     
-    // Continue monitoring unless match has ended
-    if (matchMap.has(channelId)) {
-      setTimeout(checkFlood, 30 * 1000); // Check every 30 seconds
+    if (matches.has(channelId)) {
+      setTimeout(checkFlood, 30 * 1000);
     }
   };
   
-  // Start the first check after 30 seconds
   setTimeout(checkFlood, 30 * 1000);
 }
 
@@ -733,16 +701,49 @@ function formatRankDisplay(rank, division, lp) {
   return `${rank} ${lp}LP`;
 }
 
-function formatTimeLeft(ms) {
-  if (ms >= 24 * 60 * 60 * 1000) {
-    return `${Math.ceil(ms / (24 * 60 * 60 * 1000))} days`;
-  } else if (ms >= 60 * 60 * 1000) {
-    return `${Math.ceil(ms / (60 * 60 * 1000))} hours`;
-  } else if (ms >= 60 * 1000) {
-    return `${Math.ceil(ms / (60 * 1000))} minutes`;
-  } else {
-    return `${Math.ceil(ms / 1000)} seconds`;
+// Cleanup function to remove expired bans on bot startup
+function cleanupExpiredBans() {
+  const now = Date.now();
+  let cleanedCount = 0;
+  
+  for (const [userId, expiration] of bannedUsers.entries()) {
+    if (expiration > 0 && now > expiration) {
+      bannedUsers.delete(userId);
+      cleanedCount++;
+    }
   }
+  
+  if (cleanedCount > 0) {
+    console.log(`🧹 Cleaned up ${cleanedCount} expired queue bans on startup`);
+    saveData();
+  }
+}
+
+function formatTimeLeft(ms) {
+  if (ms <= 0) return "0 seconds";
+  
+  // Calculate different time units
+  const months = Math.floor(ms / (30 * 24 * 60 * 60 * 1000));
+  const weeks = Math.floor((ms % (30 * 24 * 60 * 60 * 1000)) / (7 * 24 * 60 * 60 * 1000));
+  const days = Math.floor((ms % (7 * 24 * 60 * 60 * 1000)) / (24 * 60 * 60 * 1000));
+  const hours = Math.floor((ms % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+  const minutes = Math.floor((ms % (60 * 60 * 1000)) / (60 * 1000));
+  
+  const parts = [];
+  
+  if (months > 0) parts.push(`${months} month${months > 1 ? 's' : ''}`);
+  if (weeks > 0) parts.push(`${weeks} week${weeks > 1 ? 's' : ''}`);
+  if (days > 0) parts.push(`${days} day${days > 1 ? 's' : ''}`);
+  if (hours > 0) parts.push(`${hours} hour${hours > 1 ? 's' : ''}`);
+  if (minutes > 0) parts.push(`${minutes} minute${minutes > 1 ? 's' : ''}`);
+  
+  // If we have no meaningful units (less than 1 minute), show seconds
+  if (parts.length === 0) {
+    const seconds = Math.floor(ms / 1000);
+    return `${seconds} second${seconds > 1 ? 's' : ''}`;
+  }
+  
+  return parts.join(', ');
 }
 
 function getTimeoutInfo(userId) {
@@ -1270,212 +1271,6 @@ async function startReadyCheck(channel) {
   });
 }
 
-async function start4funReadyCheck(channel) {
-  if (queue4fun.length !== QUEUE4FUN_SIZE) {
-    console.warn(`⚠️ 4fun Ready check attempted with ${queue4fun.length} players, expected ${QUEUE4FUN_SIZE}`);
-    return;
-  }
-  
-  if (active4funReadyCheck) {
-    console.warn("⚠️ 4fun Ready check already active, ignoring duplicate");
-    return;
-  }
-
-  const participants = [...queue4fun];
-  const ready = new Set();
-  const declined = new Set();
-  const TIMEOUT = 60;
-  const endTime = Date.now() + (TIMEOUT * 1000);
-
-  let pendingUpdate = false;
-  let updateTimeout = null;
-  const DEBOUNCE_DELAY = 300;
-
-  // Send DM notifications to all players in queue
-  console.log("🔔 Sending ready check DM notifications...");
-  for (const playerId of participants) {
-    await sendReadyCheckDM(playerId, false);
-  }
-
-  const createReadyCheckEmbed = () => {
-    const readyArray = Array.from(ready);
-    const waitingArray = participants.filter(id => !ready.has(id) && !declined.has(id));
-    const declinedArray = Array.from(declined);
-    
-    const embed = new EmbedBuilder()
-      .setTitle("⚔️ Ready Check")
-      .setDescription(
-        `${participants.length} players have queued!\n\n` +
-        `**Click ✅ Ready if you're ready**\n` +
-        `**Click ❌ Decline if you can't**\n\n` +
-        `⏳ **Time remaining:** ${createDiscordTimestamp(endTime, 'R')}\n\n` +
-        `**Ready (${ready.size}/${participants.length}):**\n` +
-        `${readyArray.length > 0 ? readyArray.map(id => `<@${id}> ✅`).join('\n') : 'None yet'}\n\n` +
-        `**Waiting for response:**\n` +
-        `${waitingArray.length > 0 ? waitingArray.map(id => `<@${id}> ⏳`).join('\n') : 'None'}`
-      )
-      .setColor(0x00ffff);
-
-    if (declinedArray.length > 0) {
-      embed.addFields({
-        name: "❌ Declined",
-        value: declinedArray.map(id => `<@${id}>`).join('\n'),
-      });
-    }
-
-    return embed;
-  };
-
-  const debouncedUpdate = async () => {
-    if (updateTimeout) {
-      clearTimeout(updateTimeout);
-    }
-    
-    updateTimeout = setTimeout(async () => {
-      try {
-        const updatedEmbed = createReadyCheckEmbed();
-        await msg.edit({ embeds: [updatedEmbed] }).catch(() => {});
-        pendingUpdate = false;
-      } catch (error) {
-        console.log('Edit error during 4fun ready check:', error.message);
-        pendingUpdate = false;
-      }
-    }, DEBOUNCE_DELAY);
-  };
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("ready4fun")
-      .setLabel("✅ Ready")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId("notready4fun")
-      .setLabel("❌ Decline")
-      .setStyle(ButtonStyle.Danger)
-  );
-
-  const msg = await channel.send({
-    content: participants.map((id) => `<@${id}>`).join(" "),
-    embeds: [createReadyCheckEmbed()],
-    components: [row],
-  });
-
-  const collector = msg.createMessageComponentCollector({ time: TIMEOUT * 1000 });
-  active4funReadyCheck = { msg, collector };
-
-  collector.on("collect", async (i) => {
-    if (!participants.includes(i.user.id)) {
-        return i.reply({ content: "You're not in this 4fun queue.", ephemeral: true });
-    }
-
-    if (i.customId === "notready4fun") {
-        console.log("4fun Decline button clicked by:", i.user.id);
-        
-        queue4fun = queue4fun.filter((id) => id !== i.user.id);
-        declined.add(i.user.id);
-        saveData();
-        await update4funQueueMessage();
-
-        await i.reply({
-            content: `❌ You have declined the 4fun queue.`,
-            ephemeral: true,
-        });
-        
-        await msg.channel.send({
-            content: `⚠️ <@${i.user.id}> declined the 4fun ready check.`
-        });
-        
-        collector.stop("declined");
-        return;
-    }
-
-    if (ready.has(i.user.id)) {
-        await i.deferUpdate().catch(() => {});
-        return;
-    }
-
-    ready.add(i.user.id);
-    debouncedUpdate();
-
-    await i.deferUpdate().catch((err) => {
-      if (err.code !== 10062) console.error("4fun Button deferUpdate error:", err);
-    });
-
-    if (ready.size === participants.length) {
-      if (updateTimeout) {
-        clearTimeout(updateTimeout);
-      }
-      try {
-        const updatedEmbed = createReadyCheckEmbed();
-        await msg.edit({ embeds: [updatedEmbed] }).catch(() => {});
-      } catch (error) {
-        console.log('Edit error during 4fun ready check:', error.message);
-      }
-      collector.stop("all_ready");
-    }
-    return;
-  });
-  
-  collector.on("end", async (_, reason) => {
-    if (updateTimeout) {
-      clearTimeout(updateTimeout);
-    }
-    active4funReadyCheck = null;
-
-    let description = "";
-    if (reason === "all_ready") {
-        description = "✅ All players ready. 4Fun Match is starting!";
-    } else if (reason === "declined") {
-        description = "❌ A player declined the 4fun ready check. Match canceled.";
-    } else {
-        description = "⌛ 4fun Ready check timed out. Match canceled.";
-        
-        const notReady = participants.filter((id) => !ready.has(id) && !declined.has(id));
-        if (notReady.length > 0) {
-            queue4fun = queue4fun.filter((id) => !notReady.includes(id));
-            saveData();
-            await update4funQueueMessage();
-            
-            await msg.channel.send({
-                content: `⌛ 4fun Ready check timed out. The following players did not respond: ${notReady.map(id => `<@${id}>`).join(", ")}`
-            });
-        }
-    }
-
-    const finalEmbed = EmbedBuilder.from(createReadyCheckEmbed())
-        .setDescription(description)
-        .setColor(
-            reason === "all_ready"
-                ? 0x00ff00
-                : reason === "declined"
-                ? 0xff0000
-                : 0xffa500
-        );
-
-    await msg.edit({ embeds: [finalEmbed], components: [] }).catch(() => {});
-
-    setTimeout(async () => {
-      try {
-        const freshMessage = await msg.channel.messages.fetch(msg.id).catch(() => null);
-        if (freshMessage && freshMessage.deletable) {
-          await freshMessage.delete();
-          console.log('✅ 4fun Ready check embed deleted after completion');
-        }
-      } catch (error) {
-        if (error.code !== 10008) {
-          console.error('Error deleting 4fun ready check embed:', error);
-        }
-      }
-    }, 50000);
-
-    if (reason === "all_ready") {
-        await make4funTeams(channel);
-    } else {
-        await update4funQueueMessage();
-    }
-  });
-}
-
 // Post role selection in #how-to-play
 async function postRoleSelectionMessage(channel) {
   const buttonRow = new ActionRowBuilder().addComponents(
@@ -1710,61 +1505,6 @@ function buildQueueEmbed() {
   return embed;
 }
 
-function build4funQueueEmbed() {
-  // Group duos in queue
-  const duosInQueue = [];
-  const soloInQueue = [];
-  const processed = new Set();
-
-  queue4fun.forEach(playerId => {
-    if (processed.has(playerId)) return;
-
-    const player = ensurePlayer(playerId);
-    if (player.fun.duoPartner && queue4fun.includes(player.fun.duoPartner)) {
-      duosInQueue.push([playerId, player.fun.duoPartner]);
-      processed.add(playerId);
-      processed.add(player.fun.duoPartner);
-    } else {
-      soloInQueue.push(playerId);
-      processed.add(playerId);
-    }
-  });
-
-  let queueDescription = "";
-
-  // Display duos
-  if (duosInQueue.length > 0) {
-    queueDescription += "**🤝 Duos:**\n";
-    duosInQueue.forEach((duo, index) => {
-      queueDescription += `${index + 1}. <@${duo[0]}> + <@${duo[1]}>\n`;
-    });
-    queueDescription += "\n";
-  }
-
-  // Display solo players
-  if (soloInQueue.length > 0) {
-    queueDescription += "**👤 Solo Players:**\n";
-    soloInQueue.forEach((playerId, index) => {
-      queueDescription += `${duosInQueue.length + index + 1}. <@${playerId}>\n`;
-    });
-  }
-
-  if (queue4fun.length === 0) {
-    queueDescription = "The 4fun queue is currently empty.";
-  }
-
-  const embed = new EmbedBuilder()
-    .setTitle("🎉 4Fun Queue - Howling Abyss 5v5 Blind Pick")
-    .setColor(0x00ff00)
-    .setDescription(queueDescription + `\nStatus: **OPEN**`)
-    .setFooter({ 
-      text: `Queue: ${queue4fun.length}/${QUEUE4FUN_SIZE} | Duos: ${duosInQueue.length}` 
-    })
-    .setTimestamp();
-
-  return embed;
-}
-
 // ---------------- QUEUE EMBED ----------------
 async function postQueueMessage(channel) {
   // Check for an existing queue message (from the bot)
@@ -1783,98 +1523,29 @@ async function postQueueMessage(channel) {
   const joinRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId("join").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId("leave").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId("opgg").setLabel("🌐 Multi OP.GG").setStyle(ButtonStyle.Primary)
+    new ButtonBuilder().setCustomId("duo").setLabel("🤝 Request Duo").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setLabel("🌐 Multi OP.GG").setStyle(ButtonStyle.Link).setURL(getMultiOPGG())
   );
 
-  // DM toggle button
+  // Add Change Roles button to the second row
   const dmToggleRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId("toggle_dm")
       .setLabel("Toggle DM Notifications")
       .setStyle(ButtonStyle.Secondary)
-      .setEmoji("🔔")
+      .setEmoji("🔔"),
+    new ButtonBuilder()
+      .setCustomId("open_role_selection")
+      .setLabel("Change Roles")
+      .setStyle(ButtonStyle.Primary)
+      .setEmoji("🎮")
   );
 
   const embed = buildQueueEmbed();
   queueMessage = await channel.send({ 
     embeds: [embed], 
-    components: [joinRow, dmToggleRow] // Include both rows
+    components: [joinRow, dmToggleRow]
   });
-}
-
-async function post4funQueueMessage(channel) {
-  // Check for an existing queue message with better filtering
-  const existing = (await channel.messages.fetch({ limit: 50 })) // Increase limit to 50
-    .filter(m => 
-      m.author.id === client.user.id && 
-      m.embeds.length > 0 && 
-      m.embeds[0].title && 
-      m.embeds[0].title.includes("4Fun Queue") // More flexible matching
-    )
-    .first();
-
-  if (existing) {
-    console.log("4Fun Queue message already exists — reusing it.");
-    queueMessage4fun = existing;
-    await update4funQueueMessage();
-    return existing; // Return the existing message
-  }
-
-  // Create new message if none exists
-  const joinRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId("join4fun").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId("leave4fun").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId("duo4fun").setLabel("🤝 Request Duo").setStyle(ButtonStyle.Primary)
-  );
-
-  // DM toggle for 4fun
-  const dmToggleRow4fun = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("toggle_dm_4fun")
-      .setLabel("Toggle DM Notifications")
-      .setStyle(ButtonStyle.Secondary)
-      .setEmoji("🔔")
-  );
-
-  const embed = build4funQueueEmbed();
-  queueMessage4fun = await channel.send({ 
-    embeds: [embed], 
-    components: [joinRow, dmToggleRow4fun] 
-  });
-  return queueMessage4fun;
-}
-
-let update4funQueueTimeout = null;
-async function update4funQueueMessage() {
-  trackRequest();
-  if (!queueMessage4fun) return;
-
-  if (update4funQueueTimeout) {
-    clearTimeout(update4funQueueTimeout);
-  }
-
-  update4funQueueTimeout = setTimeout(async () => {
-    const joinRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId("join4fun").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("leave4fun").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("duo4fun").setLabel("🤝 Request Duo").setStyle(ButtonStyle.Primary)
-    );
-
-    // DM toggle for 4fun
-    const dmToggleRow4fun = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("toggle_dm_4fun")
-        .setLabel("Toggle DM Notifications")  // Changed from "🔔 4Fun DM Notifications"
-        .setStyle(ButtonStyle.Secondary)
-        .setEmoji("🔔")
-    );
-
-    const embed = build4funQueueEmbed();
-    await queueMessage4fun.edit({ 
-      embeds: [embed], 
-      components: [joinRow, dmToggleRow4fun] 
-    });
-  }, 250);
 }
 
 let updateQueueTimeout = null;
@@ -1908,16 +1579,22 @@ async function updateQueueMessage() {
     const joinRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("join").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("leave").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId("duo").setLabel("🤝 Request Duo").setStyle(ButtonStyle.Primary), // Add duo button
+      new ButtonBuilder().setCustomId("duo").setLabel("🤝 Request Duo").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setLabel("🌐 Multi OP.GG").setStyle(ButtonStyle.Link).setURL(getMultiOPGG())
     );
 
+    // Add Change Roles button to the second row
     const dmToggleRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId("toggle_dm")
         .setLabel("Toggle DM Notifications")
         .setStyle(ButtonStyle.Secondary)
-        .setEmoji("🔔")
+        .setEmoji("🔔"),
+      new ButtonBuilder()
+        .setCustomId("open_role_selection")
+        .setLabel("Change Roles")
+        .setStyle(ButtonStyle.Primary)
+        .setEmoji("🎮")
     );
 
     const embed = buildQueueEmbed();
@@ -1929,6 +1606,92 @@ async function updateQueueMessage() {
 }
 
 // Helper function to update match message with vote display
+// Handle role assignment with existing roles
+async function assignTeamRoles(guild, team1Players, team2Players) {
+  try {
+    // Find existing roles
+    const team1Role = guild.roles.cache.find(role => role.name === "Team 1");
+    const team2Role = guild.roles.cache.find(role => role.name === "Team 2");
+    
+    if (!team1Role || !team2Role) {
+      console.log('❌ Team roles not found. Make sure "Team 1" and "Team 2" roles exist in the server.');
+      return null;
+    }
+    
+    // Assign Team 1 role to team 1 players
+    for (const playerId of team1Players) {
+      try {
+        const member = await guild.members.fetch(playerId);
+        await member.roles.add(team1Role);
+        console.log(`✅ Assigned Team 1 role to ${playerId}`);
+      } catch (error) {
+        console.error(`❌ Failed to assign Team 1 role to ${playerId}:`, error);
+      }
+    }
+    
+    // Assign Team 2 role to team 2 players  
+    for (const playerId of team2Players) {
+      try {
+        const member = await guild.members.fetch(playerId);
+        await member.roles.add(team2Role);
+        console.log(`✅ Assigned Team 2 role to ${playerId}`);
+      } catch (error) {
+        console.error(`❌ Failed to assign Team 2 role to ${playerId}:`, error);
+      }
+    }
+    
+    return { team1Role, team2Role };
+  } catch (error) {
+    console.error('❌ Error in assignTeamRoles:', error);
+    return null;
+  }
+}
+
+async function removeTeamRoles(guild, team1Players, team2Players) {
+  try {
+    const team1Role = guild.roles.cache.find(role => role.name === "Team 1");
+    const team2Role = guild.roles.cache.find(role => role.name === "Team 2");
+    
+    if (!team1Role || !team2Role) {
+      console.log('⚠️ Team roles not found, skipping removal');
+      return;
+    }
+    
+    // Remove Team 1 role from team 1 players
+    for (const playerId of team1Players) {
+      try {
+        const member = await guild.members.fetch(playerId);
+        await member.roles.remove(team1Role);
+        console.log(`✅ Removed Team 1 role from ${playerId}`);
+      } catch (error) {
+        console.error(`❌ Failed to remove Team 1 role from ${playerId}:`, error);
+      }
+    }
+    
+    // Remove Team 2 role from team 2 players
+    for (const playerId of team2Players) {
+      try {
+        const member = await guild.members.fetch(playerId);
+        await member.roles.remove(team2Role);
+        console.log(`✅ Removed Team 2 role from ${playerId}`);
+      } catch (error) {
+        console.error(`❌ Failed to remove Team 2 role from ${playerId}:`, error);
+      }
+    }
+  } catch (error) {
+    console.error('❌ Error in removeTeamRoles:', error);
+  }
+}
+
+function setLongTimeout(callback, ms) {
+    const MAX_TIMEOUT = 2147483647; // Maximum 32-bit signed integer
+    if (ms <= MAX_TIMEOUT) {
+        return setTimeout(callback, ms);
+    } else {
+        return setTimeout(() => setLongTimeout(callback, ms - MAX_TIMEOUT), MAX_TIMEOUT);
+    }
+}
+
 async function updateMatchVoteDisplay(channel, match) {
   if (!match.matchMessageId) return;
   
@@ -1953,11 +1716,31 @@ async function updateMatchVoteDisplay(channel, match) {
   }
 }
 
+// ---------------- Parse duration strings ----------------
+function parseDuration(durationStr) {
+  const regex = /^(\d+)([hdwm])$/;
+  const match = durationStr.toLowerCase().match(regex);
+  
+  if (!match) return null;
+  
+  const value = parseInt(match[1]);
+  const unit = match[2];
+  
+  switch (unit) {
+    case 'h': return value * 60 * 60 * 1000; // hours
+    case 'd': return value * 24 * 60 * 60 * 1000; // days
+    case 'w': return value * 7 * 24 * 60 * 60 * 1000; // weeks
+    case 'm': return value * 30 * 24 * 60 * 60 * 1000; // months (30 days)
+    default: return null;
+  }
+}
+
+
 // ---------------- DM NOTIFICATION FUNCTION ----------------
-async function sendReadyCheckDM(userId, is4fun = false) {
+async function sendReadyCheckDM(userId) {
   try {
     const player = ensurePlayer(userId);
-    const shouldSendDM = is4fun ? player.fun.dmNotifications : player.dmNotifications;
+    const shouldSendDM = player.dmNotifications;
     
     if (!shouldSendDM) {
       console.log(`🔕 DM notifications disabled for user ${userId}, skipping DM`);
@@ -1965,11 +1748,10 @@ async function sendReadyCheckDM(userId, is4fun = false) {
     }
 
     const user = await client.users.fetch(userId);
-    const queueType = is4fun ? "4Fun" : "Ranked";
     
     const dmEmbed = new EmbedBuilder()
       .setTitle("⚔️ Ready Check Alert!")
-      .setDescription(`A ready check has started for the **${queueType}** queue!\n\nPlease check <#${queueMessage.channel.id}> to respond.`)
+      .setDescription(`A ready check has started for the **Ranked** queue!\n\nPlease check <#${queueMessage.channel.id}> to respond.`)
       .setColor(0x00ff00)
       .setTimestamp()
       .setFooter({ text: "You can disable these notifications with the button in queue" });
@@ -1977,8 +1759,7 @@ async function sendReadyCheckDM(userId, is4fun = false) {
     await user.send({ embeds: [dmEmbed] });
     console.log(`✅ Sent ready check DM to user ${userId}`);
   } catch (error) {
-    // If user has DMs disabled or other error, just log it
-    if (error.code === 50007) { // Cannot send messages to this user
+    if (error.code === 50007) {
       console.log(`❌ Cannot send DM to user ${userId} (DMs disabled)`);
     } else {
       console.error(`Error sending DM to user ${userId}:`, error);
@@ -2143,143 +1924,6 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
   }
-
-  if (interaction.isUserSelectMenu() && interaction.customId === 'duo_partner_select') {
-    const selectedUserId = interaction.values[0]; // The selected user's ID
-    const requesterId = interaction.user.id;
-
-    // Use the same validation logic you had in your modal
-    if (selectedUserId === requesterId) {
-        return interaction.reply({
-            content: "❌ You cannot request a duo with yourself.",
-            ephemeral: true
-        });
-    }
-
-    const requester = ensurePlayer(requesterId);
-    const target = ensurePlayer(selectedUserId);
-
-    // Validate target player
-    if (!target.summonerName) {
-        return interaction.reply({
-            content: "❌ That player is not registered. They need to use `!register` first.",
-            ephemeral: true
-        });
-    }
-
-    if (target.fun.duoPartner) {
-        return interaction.reply({
-            content: `❌ <@${selectedUserId}> is already in a duo with <@${target.fun.duoPartner}>.`,
-            ephemeral: true
-        });
-    }
-
-    // Check if target is in queue
-    const targetInQueue = queue4fun.includes(selectedUserId);
-
-    // Find the duo-requests channel
-    const duoRequestsChannel = interaction.guild.channels.cache.find(
-        channel => channel.name === 'duo-requests' && channel.type === 0
-    );
-
-    if (!duoRequestsChannel) {
-        return interaction.update({
-            content: '❌ Error: #duo-requests channel not found. Please contact an admin.',
-            components: []
-        });
-    }
-
-    try {
-        // Calculate expiration timestamp (5 minutes from now)
-        const expirationTimestamp = Math.floor((Date.now() + DUO_REQUEST_EXPIRY) / 1000);
-        
-        // Create the embed for the duo request with Discord timestamp
-        const embed = new EmbedBuilder()
-            .setTitle("🤝 Duo Request")
-            .setDescription(`<@${requesterId}> wants to form a duo with <@${selectedUserId}> for 4fun queue!`)
-            .addFields(
-                { name: "Requester", value: `<@${requesterId}>`, inline: true },
-                { name: "Target", value: `<@${selectedUserId}>`, inline: true },
-                { name: "Queue Status", value: targetInQueue ? "✅ Target in queue" : "❌ Target not in queue", inline: true },
-                { name: "Expires", value: `<t:${expirationTimestamp}:R>`, inline: true }
-            )
-            .setColor(0x0099FF)
-            .setTimestamp();
-
-          const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setCustomId(`accept_duo_${requesterId}_${selectedUserId}`)
-                .setLabel("✅ Accept")
-                .setStyle(ButtonStyle.Success),
-            new ButtonBuilder()
-                .setCustomId(`decline_duo_${requesterId}_${selectedUserId}`)
-                .setLabel("❌ Decline")
-                .setStyle(ButtonStyle.Danger)
-          );
-
-        // Send the duo request to the #duo-requests channel
-        const duoMessage = await duoRequestsChannel.send({ 
-            content: `<@${selectedUserId}>`, // Ping the target user
-            embeds: [embed], 
-            components: [row] 
-        });
-
-        // Create the request data object
-        const requestData = {
-            targetId: selectedUserId,
-            timestamp: Date.now(),
-            messageId: duoMessage.id,
-            channelId: duoRequestsChannel.id,
-            expirationTimestamp: expirationTimestamp // Store the timestamp for reference
-        };
-
-        // Remove the countdown interval and just keep the expiration timer
-        requestData.timer = setTimeout(async () => {
-            if (pendingDuoRequests.has(requesterId)) {
-                const expiredRequest = pendingDuoRequests.get(requesterId);
-                pendingDuoRequests.delete(requesterId);
-                
-                // Update the message to show it expired
-                try {
-                    const channel = interaction.guild.channels.cache.get(expiredRequest.channelId);
-                    if (channel) {
-                        const message = await channel.messages.fetch(expiredRequest.messageId);
-                        const expiredEmbed = EmbedBuilder.from(message.embeds[0])
-                            .setColor(0xff0000)
-                            .spliceFields(3, 1, { name: "Status", value: "❌ Expired", inline: true });
-                        
-                        await message.edit({ 
-                            embeds: [expiredEmbed], 
-                            components: [] 
-                        });
-                    }
-                } catch (error) {
-                    console.error("Failed to update expired duo request:", error);
-                }
-                
-                console.log(`⏰ Duo request from ${requesterId} expired after 5 minutes`);
-            }
-        }, DUO_REQUEST_EXPIRY);
-
-        // Store the request data
-        pendingDuoRequests.set(requesterId, requestData);
-
-        // Update the original interaction
-        await interaction.update({
-            content: `✅ Duo request sent to <@${selectedUserId}> in ${duoRequestsChannel}! They have 5 minutes to accept.`,
-            components: []
-        });
-
-    } catch (error) {
-        console.error("Failed to send duo request:", error);
-        await interaction.reply({
-            content: "❌ Could not send duo request. Please try again.",
-            ephemeral: true
-        });
-    }
-  }
-
-  
 
   // ---------------- BUTTONS ----------------
   if (interaction.isButton()) {
@@ -2501,23 +2145,6 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    // --- 4Fun DM Toggle Button ---
-    if (interaction.customId === "toggle_dm_4fun") {
-      // Defer the interaction first
-      await interaction.deferReply({ ephemeral: true });
-      
-      const player = ensurePlayer(interaction.user.id);
-      
-      // Toggle the 4fun DM notification setting
-      player.fun.dmNotifications = !player.fun.dmNotifications;
-      saveData();
-      
-      // Now use editReply since we deferred
-      await interaction.editReply({
-        content: `DM notifications are now **${player.fun.dmNotifications ? "ENABLED" : "DISABLED"}** for 4fun queue.`
-      });
-    }
-
     // --- Draft Link Buttons ---
     if (interaction.customId === 'blue_draft' || interaction.customId === 'red_draft' || interaction.customId === 'spectator_draft') {
       // Find the match for this channel
@@ -2573,72 +2200,6 @@ client.on("interactionCreate", async (interaction) => {
       // Check if we have a valid link (not just the base URL)
       if (!link || link === 'https://draftlol.dawe.gg' || !link.includes('draftlol.dawe.gg/')) {
         console.error('❌ Invalid draft link retrieved from match object:', link);
-        return interaction.reply({
-          content: `❌ Draft link is not available or failed to generate. Please create draft links manually at https://draftlol.dawe.gg`,
-          ephemeral: true
-        });
-      }
-
-      await interaction.reply({
-        content: `${message}\n${link}`,
-        ephemeral: true
-      });
-    }
-
-    // Similarly update the 4fun draft link buttons:
-    if (interaction.customId === 'blue_draft_4fun' || interaction.customId === 'red_draft_4fun' || interaction.customId === 'spectator_draft_4fun') {
-      const match = matches4fun.get(interaction.channelId);
-      if (!match) {
-        return interaction.reply({
-          content: "❌ No active 4fun match found or draft links not available.",
-          ephemeral: true
-        });
-      }
-
-      const userId = interaction.user.id;
-      let link = '';
-      let message = '';
-
-      if (interaction.customId === 'blue_draft_4fun') {
-        // Check if user is staff OR the assigned blue drafter
-        const isStaff = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
-        const isAssignedDrafter = match.drafters && userId === match.drafters.blue;
-        
-        if (!isStaff && !isAssignedDrafter) {
-          return interaction.reply({
-            content: `❌ Only staff members or the assigned blue team drafter (<@${match.drafters?.blue}>) can access this draft link.`,
-            ephemeral: true
-          });
-        }
-        link = match.blue;
-        message = '🔵 **Blue Team Draft Link**';
-      } 
-      else if (interaction.customId === 'red_draft_4fun') {
-        // Check if user is staff OR the assigned red drafter
-        const isStaff = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
-        const isAssignedDrafter = match.drafters && userId === match.drafters.red;
-        
-        if (!isStaff && !isAssignedDrafter) {
-          return interaction.reply({
-            content: `❌ Only staff members or the assigned red team drafter (<@${match.drafters?.red}>) can access this draft link.`,
-            ephemeral: true
-          });
-        }
-        link = match.red;
-        message = '🔴 **Red Team Draft Link**';
-      }
-      else if (interaction.customId === 'spectator_draft_4fun') {
-        // Spectator link is available to ANYONE in the server
-        link = match.spectator;
-        message = '👁️ **Spectator Link**';
-      }
-
-      // Debug logging
-      console.log(`🔗 Retrieved 4fun draft link for ${interaction.customId}:`, link);
-
-      // Check if we have a valid link
-      if (!link || link === 'https://draftlol.dawe.gg' || !link.includes('draftlol.dawe.gg/')) {
-        console.error('❌ Invalid 4fun draft link retrieved:', link);
         return interaction.reply({
           content: `❌ Draft link is not available or failed to generate. Please create draft links manually at https://draftlol.dawe.gg`,
           ephemeral: true
@@ -2715,14 +2276,28 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      if (bannedUsers.has(interaction.user.id)) {
-        return interaction.reply({
-          content: "🚫 You are banned from queuing. Contact an admin if you believe this is a mistake.",
-          ephemeral: true,
-        });
+      const userBanExpiration = bannedUsers.get(interaction.user.id);
+      if (userBanExpiration !== undefined) {
+        const isPermanent = userBanExpiration === 0;
+        const isTemporaryExpired = userBanExpiration > 0 && Date.now() > userBanExpiration;
+        
+        if (isTemporaryExpired) {
+          // Clean up expired ban
+          bannedUsers.delete(interaction.user.id);
+          saveData();
+        } else {
+          const timeLeft = isPermanent ? 
+            "permanently" : 
+            formatTimeLeft(userBanExpiration - Date.now());
+          
+          return interaction.reply({
+            content: `🚫 You are banned from queuing ${timeLeft}. Contact an admin if you believe this is a mistake.`,
+            ephemeral: true,
+          });
+        }
       }
 
-      // ADD THIS CHECK - Prevent users in timeout from joining queue
+      // Prevent users in timeout from joining queue
       const timeoutStatus = isUserInTimeout(interaction.user.id);
       if (timeoutStatus.inTimeout) {
         const timeLeft = formatTimeLeft(timeoutStatus.timeLeft);
@@ -2732,7 +2307,7 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      // ADD THIS CHECK - Prevent joining when ready check is active
+      // Prevent joining when ready check is active
       if (activeReadyCheck) {
         return interaction.reply({
           content: "⏳ A ready check is currently in progress. Please wait for it to complete before joining the queue.",
@@ -2740,7 +2315,7 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      // ADD SOLUTION 1: Queue Locking
+      // Queue Locking
       if (queueLock) {
         return interaction.reply({
           content: "⏳ The queue is currently processing. Please try again in a moment.",
@@ -2791,7 +2366,7 @@ client.on("interactionCreate", async (interaction) => {
             },
             { 
               name: "How to Fix", 
-              value: "Click the '🎮 Set Roles' button in the how-to-play channel to complete your role preferences." 
+              value: "Click the '🎮 Set Roles' button in the how-to-play channel or the 'Change Roles' button in the queue to complete your role preferences." 
             }
           )
           .setColor(0xFF0000);
@@ -2812,7 +2387,7 @@ client.on("interactionCreate", async (interaction) => {
           return interaction.reply({ content: "⚠️ You're already in the queue.", ephemeral: true });
         }
 
-        // ADD SOLUTION 2: Atomic Queue Size Check
+        // Atomic Queue Size Check
         if (queue.length >= QUEUE_SIZE) {
           queueLock = false;
           return interaction.reply({ 
@@ -2825,14 +2400,28 @@ client.on("interactionCreate", async (interaction) => {
         saveData();
         await updateQueueMessage();
         
+        // Send role confirmation message
+        const roleDisplay = player.roles.map((role, index) => {
+          const position = index + 1;
+          const emoji = position === 1 ? "1️⃣" : position === 2 ? "2️⃣" : position === 3 ? "3️⃣" : position === 4 ? "4️⃣" : "5️⃣";
+          return `${emoji} ${role}`;
+        }).join('\n');
+
+        const roleConfirmationEmbed = new EmbedBuilder()
+          .setTitle("✅ Joined Queue Successfully")
+          .setDescription(`You have been added to the queue!\n\n**Your Current Role Preferences:**\n${roleDisplay}\n\n*Queue position: ${queue.length}/${QUEUE_SIZE}*`)
+          .setColor(0x00FF00)
+          .setFooter({ text: "Use 'Change Roles' button to modify your preferences" });
+
+        await interaction.reply({
+          embeds: [roleConfirmationEmbed],
+          ephemeral: true
+        });
+        
         // Strict Ready Check Trigger
         if (queue.length === QUEUE_SIZE && !activeReadyCheck) {
           await startReadyCheck(interaction.channel);
         }
-        
-        await interaction.deferUpdate().catch(err => { 
-          if (err.code !== 10062) console.error("deferUpdate failed:", err); 
-        });
         
       } finally {
         // UNLOCK THE QUEUE
@@ -2904,63 +2493,6 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
 
-    else if (interaction.customId.startsWith("report_4fun_win_")) {
-      const team = interaction.customId.split("_")[3];
-      
-      const match = matches4fun.get(interaction.channelId);
-      if (!match) {
-        return interaction.reply({ 
-          content: "❌ No active 4fun match found in this channel.", 
-          ephemeral: true 
-        });
-      }
-      
-      const playerId = interaction.user.id;
-      const isStaff = interaction.member.permissions.has(PermissionsBitField.Flags.ManageMessages);
-      
-      if (isStaff) {
-        await end4funMatch(interaction.channel, team);
-        return interaction.reply({ 
-          content: `✅ Staff override: 4fun Match result recorded! Team ${team} wins!`, 
-          ephemeral: true 
-        });
-      }
-      
-      const isInMatch = match.team1.includes(playerId) || match.team2.includes(playerId);
-      if (!isInMatch) {
-        return interaction.reply({ 
-          content: "❌ You are not a player in this 4fun match and cannot vote.", 
-          ephemeral: true 
-        });
-      }
-      
-      match.votes.team1.delete(playerId);
-      match.votes.team2.delete(playerId);
-      
-      if (team === "1") {
-        match.votes.team1.add(playerId);
-      } else {
-        match.votes.team2.add(playerId);
-      }
-      
-      // Update or create 4fun vote status message
-      await updateOrCreateVoteMessage(interaction.channel, match, true);
-      
-      const team1Votes = match.votes.team1.size;
-      const team2Votes = match.votes.team2.size;
-      
-      if (team1Votes >= 6) {
-        await interaction.channel.send(`🏆 **Team 1 has reached 6 votes! 4Fun Match ending...**`);
-        await end4funMatch(interaction.channel, "1");
-      } else if (team2Votes >= 6) {
-        await interaction.channel.send(`🏆 **Team 2 has reached 6 votes! 4Fun Match ending...**`);
-        await end4funMatch(interaction.channel, "2");
-      } else {
-        // Just acknowledge the vote
-        await interaction.deferUpdate().catch(() => {});
-      }
-    }
-
     // --- Leave Queue ---
     else if (interaction.customId === "leave") {
       if (!queue.includes(id)) {
@@ -3019,339 +2551,118 @@ client.on("interactionCreate", async (interaction) => {
       const multiLink = `https://www.op.gg/lol/multisearch/na?summoners=${summoners.join("%2C")}`;
       return interaction.reply({ content: `🌐 [Multi OP.GG Link for Queue](${multiLink})`, ephemeral: true });
     }
-
-    if (interaction.customId.startsWith("accept_duo_") || interaction.customId.startsWith("decline_duo_")) {
-    const parts = interaction.customId.split('_');
-    const action = parts[0]; // "accept" or "decline"
-    const requesterId = parts[2];
-    const targetId = parts[3];
-    
-    // Verify the request exists and the interacting user is the target
-    const request = pendingDuoRequests.get(requesterId);
-    if (!request || request.targetId !== targetId) {
-        return interaction.reply({
-            content: "❌ This duo request has expired or is invalid.",
-            ephemeral: true
-        });
-    }
-    
-    if (interaction.user.id !== targetId) {
-        return interaction.reply({
-            content: "❌ Only the requested player can respond to this duo request.",
-            ephemeral: true
-        });
-    }
-    
-    if (action === "accept") {
-      // Form the duo partnership
-      const requester = ensurePlayer(requesterId);
-      const target = ensurePlayer(targetId);
-        
-      requester.fun.duoPartner = targetId;
-      target.fun.duoPartner = requesterId;
-      saveData();
-        
-      // Remove from pending requests
-      pendingDuoRequests.delete(requesterId);
-        
-      // Update the message to show it was accepted
-      const acceptedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
-        .setColor(0x00ff00)
-        .spliceFields(3, 1, { name: "Status", value: "✅ Accepted", inline: true });
-        
-      await interaction.message.edit({ 
-        embeds: [acceptedEmbed], 
-        components: [] 
-      });
-        
-      await interaction.reply({
-        content: `✅ You have accepted the duo request from <@${requesterId}>! You are now duo partners.`,
-        ephemeral: true
-      });
-
-      if (request.timer) {
-        clearTimeout(request.timer);
-      }
-
-    } else {
-        // Decline the request
-        pendingDuoRequests.delete(requesterId);
-        
-        // Update the message to show it was declined
-        const declinedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
-            .setColor(0xff0000)
-            .spliceFields(3, 1, { name: "Status", value: "❌ Declined", inline: true });
-        
-        await interaction.message.edit({ 
-            embeds: [declinedEmbed], 
-            components: [] 
-        });
-        
-        await interaction.reply({
-            content: "❌ You have declined the duo request.",
-            ephemeral: true
-        });
-        
-        // Notify the requester
-        try {
-            const requesterUser = await client.users.fetch(requesterId);
-            await requesterUser.send(`❌ <@${targetId}> declined your duo request.`);
-        } catch (error) {
-            // If DMs are disabled, that's okay
-        }
-
-        if (request.timer) {
-          clearTimeout(request.timer);
-        }
-    }
-  }
-
-    if (interaction.customId === 'duo4fun') {
-      const requesterId = interaction.user.id;
-      const requester = ensurePlayer(requesterId);
-
-      // Validation checks
-      if (!requester.summonerName) {
-          return interaction.reply({
-              content: "❌ You must be registered with `!register` before requesting a duo.",
-              ephemeral: true
-          });
-      }
-
-      if (requester.fun.duoPartner) {
-          return interaction.reply({
-              content: `❌ You are already in a duo with <@${requester.fun.duoPartner}>. Use \`!duobreak\` to dissolve it first.`,
-              ephemeral: true
-          });
-      }
-
-      // Check for existing pending request
-      if (pendingDuoRequests.has(requesterId)) {
-          return interaction.reply({
-              content: "❌ You already have a pending duo request. Please wait for it to be accepted or expire.",
-              ephemeral: true
-          });
-      }
-
-      // Create the user select menu with CORRECT method
-      const selectMenuRow = new ActionRowBuilder()
-          .addComponents(
-              new UserSelectMenuBuilder()
-                  .setCustomId('duo_partner_select')
-                  .setPlaceholder('Select your duo partner...')
-                  .setMaxValues(1) // ✅ CORRECTED: Use setMaxValues instead of setMaxUsers
-          );
-
-      await interaction.reply({
-          content: 'Please type your duo partner below:',
-          components: [selectMenuRow],
-          ephemeral: true
-      });
-    }
-
-    // 4fun queue buttons
-    if (interaction.customId === "join4fun") {
-      const id = interaction.user.id;
-      ensurePlayer(id);
-
-      // Verify user is registered
-      if (!player.summonerName) {
-        return interaction.reply({
-          content: "❌ You must **register** first with `!register <OP.GG link>` before joining the 4fun queue.",
-          ephemeral: true,
-        });
-      }
-
-      // Check if in timeout
-      const timeoutStatus = isUserInTimeout(interaction.user.id);
-      if (timeoutStatus.inTimeout) {
-        const timeLeft = formatTimeLeft(timeoutStatus.timeLeft);
-        return interaction.reply({
-          content: `⏰ You are currently in a timeout penalty and cannot join the queue for ${timeLeft}.`,
-          ephemeral: true,
-        });
-      }
-
-      // Check if in any active match
-      const isInAnyMatch = Array.from(matches.values()).some(match => 
-        match.team1.includes(id) || match.team2.includes(id)
-      ) || Array.from(matches4fun.values()).some(match => 
-        match.team1.includes(id) || match.team2.includes(id)
-      );
-      
-      if (isInAnyMatch) {
-        return interaction.reply({
-          content: "⚠️ You are currently in an active match and cannot join the queue until it ends.",
-          ephemeral: true,
-        });
-      }
-
-      if (!playerData[id].summonerName) {
-        return interaction.reply({
-          content: "❌ You must **register** first with !register <OP.GG link> before joining the 4fun queue.",
-          ephemeral: true,
-        });
-      }
-
-      if (queue4fun.includes(id)) {
-        return interaction.reply({ content: "⚠️ You're already in the 4fun queue.", ephemeral: true });
-      }
-
-      if (queue4fun.length >= QUEUE4FUN_SIZE) {
-        return interaction.reply({ 
-          content: "⚠️ The 4fun queue is already full. Please wait for the next queue", 
-          ephemeral: true 
-        });
-      }
-
-      queue4fun.push(id);
-      saveData();
-      await update4funQueueMessage();
-      
-      if (queue4fun.length === QUEUE4FUN_SIZE && !active4funReadyCheck) {
-        await start4funReadyCheck(interaction.channel);
-      }
-      
-      await interaction.deferUpdate().catch(err => { 
-        if (err.code !== 10062) console.error("4fun deferUpdate failed:", err); 
-      });
-    }
-
-    else if (interaction.customId === "leave4fun") {
-      const id = interaction.user.id;
-      
-      if (!queue4fun.includes(id)) {
-        try {
-          await interaction.deferUpdate();
-        } catch (err) {
-          if (err.code !== 10062) console.error("4fun Leave deferUpdate failed:", err);
-        }
-        return;
-      }
-
-      queue4fun = queue4fun.filter((x) => x !== id);
-      saveData();
-      await update4funQueueMessage();
-
-      try {
-        await interaction.deferUpdate();
-      } catch (err) {
-        if (err.code !== 10062) console.error("4fun Leave deferUpdate failed:", err);
-      }
-    }
   }
 
   // ---------------- SELECT MENUS ----------------
-if (interaction.isStringSelectMenu() && interaction.customId.startsWith("role_select_")) {
-  const userId = interaction.user.id;
-  const slot = parseInt(interaction.customId.split("_").pop(), 10);
-  const selectedRole = interaction.values[0];
+  if (interaction.isStringSelectMenu() && interaction.customId.startsWith("role_select_")) {
+    const userId = interaction.user.id;
+    const slot = parseInt(interaction.customId.split("_").pop(), 10);
+    const selectedRole = interaction.values[0];
 
-  ensurePlayer(userId);
-  if (!playerData[userId].roles) playerData[userId].roles = Array(5).fill(null);
+    ensurePlayer(userId);
+    if (!playerData[userId].roles) playerData[userId].roles = Array(5).fill(null);
 
-  // Get current roles to check for duplicates
-  const currentRoles = [...playerData[userId].roles];
-  
-  // If selecting a non-Fill role, remove it from other positions
-  if (selectedRole !== "Fill") {
-    // Remove this role from all other positions
-    for (let i = 0; i < currentRoles.length; i++) {
-      if (i !== slot - 1 && currentRoles[i] === selectedRole) {
-        playerData[userId].roles[i] = null;
-      }
-    }
-  }
-
-  // Apply smart fill logic
-  if (selectedRole === "Fill") {
-    for (let i = slot - 1; i < 5; i++) {
-      playerData[userId].roles[i] = "Fill";
-    }
-  } else {
-    playerData[userId].roles[slot - 1] = selectedRole;
-    // Clear any auto-filled roles after this position
-    for (let i = slot; i < 5; i++) {
-      if (playerData[userId].roles[i] === "Fill") {
-        playerData[userId].roles[i] = null;
-      }
-    }
-  }
-
-  saveData();
-
-  // Update the select menus to reflect changes (disable already selected roles)
-  const updatedRows = [];
-  
-  for (let i = 1; i <= 5; i++) {
-    const selectMenu = new StringSelectMenuBuilder()
-      .setCustomId(`role_select_${i}`)
-      .setPlaceholder(`Position ${i}${i === 1 ? ' (Most Preferred)' : i === 5 ? ' (Least Preferred)' : ''}`);
+    // Get current roles to check for duplicates
+    const currentRoles = [...playerData[userId].roles];
     
-    // Dynamically build options, disabling already-selected roles in other positions
-    const options = ROLES.map(role => {
-      const option = new StringSelectMenuOptionBuilder()
-        .setLabel(role.label)
-        .setValue(role.value);
-      
-      // Disable role if it's already selected in another position (except current position and Fill)
-      if (role.value !== "Fill") {
-        const isAlreadySelected = playerData[userId].roles.some((existingRole, index) => 
-          existingRole === role.value && index !== i - 1
-        );
-        if (isAlreadySelected) {
-          const existingPosition = playerData[userId].roles.findIndex(r => r === role.value) + 1;
-          option.setDescription(`Already selected as position ${existingPosition}`);
-          option.setDefault(false);
+    // If selecting a non-Fill role, remove it from other positions
+    if (selectedRole !== "Fill") {
+      // Remove this role from all other positions
+      for (let i = 0; i < currentRoles.length; i++) {
+        if (i !== slot - 1 && currentRoles[i] === selectedRole) {
+          playerData[userId].roles[i] = null;
         }
       }
-      
-      // Mark current selection as default
-      if (playerData[userId].roles[i - 1] === role.value) {
-        option.setDefault(true);
+    }
+
+    // Apply smart fill logic
+    if (selectedRole === "Fill") {
+      for (let i = slot - 1; i < 5; i++) {
+        playerData[userId].roles[i] = "Fill";
       }
-      
-      return option;
-    });
+    } else {
+      playerData[userId].roles[slot - 1] = selectedRole;
+      // Clear any auto-filled roles after this position
+      for (let i = slot; i < 5; i++) {
+        if (playerData[userId].roles[i] === "Fill") {
+          playerData[userId].roles[i] = null;
+        }
+      }
+    }
+
+    saveData();
+
+    // Update the select menus to reflect changes (disable already selected roles)
+    const updatedRows = [];
     
-    selectMenu.addOptions(options);
-    updatedRows.push(new ActionRowBuilder().addComponents(selectMenu));
+    for (let i = 1; i <= 5; i++) {
+      const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId(`role_select_${i}`)
+        .setPlaceholder(`Position ${i}${i === 1 ? ' (Most Preferred)' : i === 5 ? ' (Least Preferred)' : ''}`);
+      
+      // Dynamically build options, disabling already-selected roles in other positions
+      const options = ROLES.map(role => {
+        const option = new StringSelectMenuOptionBuilder()
+          .setLabel(role.label)
+          .setValue(role.value);
+        
+        // Disable role if it's already selected in another position (except current position and Fill)
+        if (role.value !== "Fill") {
+          const isAlreadySelected = playerData[userId].roles.some((existingRole, index) => 
+            existingRole === role.value && index !== i - 1
+          );
+          if (isAlreadySelected) {
+            const existingPosition = playerData[userId].roles.findIndex(r => r === role.value) + 1;
+            option.setDescription(`Already selected as position ${existingPosition}`);
+            option.setDefault(false);
+          }
+        }
+        
+        // Mark current selection as default
+        if (playerData[userId].roles[i - 1] === role.value) {
+          option.setDefault(true);
+        }
+        
+        return option;
+      });
+      
+      selectMenu.addOptions(options);
+      updatedRows.push(new ActionRowBuilder().addComponents(selectMenu));
+    }
+
+    // Create updated display
+    const updatedRoles = playerData[userId].roles;
+    const roleDisplay = updatedRoles.map((role, index) => {
+      const position = index + 1;
+      const emoji = position === 1 ? "1️⃣" : position === 2 ? "2️⃣" : position === 3 ? "3️⃣" : position === 4 ? "4️⃣" : "5️⃣";
+      return `${emoji} ${role || "❌ Not set"}`;
+    }).join('\n');
+
+    const successEmbed = new EmbedBuilder()
+      .setTitle("🎮 Set Your Role Preferences")
+      .setDescription(`**Position ${slot}** set to: **${selectedRole}**${selectedRole === "Fill" ? " (all subsequent positions auto-filled)" : ""}\n\n**Your Current Preferences:**\n${roleDisplay}\n\n*Selecting 'Fill' will automatically fill all subsequent roles*\n\n**Note:** Roles are automatically moved when selected in new positions`)
+      .setColor(0x0099FF);
+
+    // Update the original message with refreshed menus
+    await interaction.update({
+      embeds: [successEmbed],
+      components: updatedRows
+    });
+    return;
   }
-
-  // Create updated display
-  const updatedRoles = playerData[userId].roles;
-  const roleDisplay = updatedRoles.map((role, index) => {
-    const position = index + 1;
-    const emoji = position === 1 ? "1️⃣" : position === 2 ? "2️⃣" : position === 3 ? "3️⃣" : position === 4 ? "4️⃣" : "5️⃣";
-    return `${emoji} ${role || "❌ Not set"}`;
-  }).join('\n');
-
-  const successEmbed = new EmbedBuilder()
-    .setTitle("🎮 Set Your Role Preferences")
-    .setDescription(`**Position ${slot}** set to: **${selectedRole}**${selectedRole === "Fill" ? " (all subsequent positions auto-filled)" : ""}\n\n**Your Current Preferences:**\n${roleDisplay}\n\n*Selecting 'Fill' will automatically fill all subsequent roles*\n\n**Note:** Roles are automatically moved when selected in new positions`)
-    .setColor(0x0099FF);
-
-  // Update the original message with refreshed menus
-  await interaction.update({
-    embeds: [successEmbed],
-    components: updatedRows
-  });
-  return;
-}
 });
 
 // ---------------- COMMANDS ----------------
 client.on("messageCreate", async (message) => {
   // ---------------- AUTO-DELETE QUEUE CHANNEL MESSAGES ----------------
   // Delete ANY message in queue channel after 60 seconds, except the main queue embed
-  if (message.channel.name === 'queue' || message.channel.name === '4fun-queue') {
+  if (message.channel.name === 'queue') {
     // Don't delete bot messages that are part of ready checks or other important bot messages
     if (message.embeds.length > 0) {
       const embed = message.embeds[0];
       if (embed.title && (
         embed.title.includes("Ready Check") || 
-        embed.title.includes("Current Queue") ||
-        embed.title.includes("4Fun Queue")
+        embed.title.includes("Current Queue")
       )) {
         return; // Skip deletion for important bot embeds
       }
@@ -3366,6 +2677,176 @@ client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
   const [cmd, ...args] = message.content.trim().split(/\s+/);
 
+  // ---------------- !playerinfo ----------------
+  if (cmd === "!playerinfo") {
+    const userMention = args[0] || message.author.id;
+    const userId = userMention.replace(/[<@!>]/g, "") || message.author.id;
+    
+    const player = ensurePlayer(userId);
+    const isSelf = userId === message.author.id;
+
+    // Check if player is registered
+    if (!player.summonerName) {
+      const messageText = isSelf ? 
+        "You are not registered. Use `!register <OP.GG link>` to register." :
+        "That player is not registered.";
+      return message.reply(messageText);
+    }
+
+
+    // Calculate additional stats
+    const totalGames = player.wins + player.losses;
+    const winRate = totalGames > 0 ? ((player.wins / totalGames) * 100).toFixed(1) : "0.0";
+    const currentIHP = getIHP(player);
+    const netWins = player.wins - player.losses;
+
+    // Format streak information
+    let streakDisplay = "No active streak";
+    if (player.streakType === "win" && player.currentStreak > 0) {
+      streakDisplay = `🔥 ${player.currentStreak} game win streak`;
+    } else if (player.streakType === "loss" && player.currentStreak < 0) {
+      streakDisplay = `😔 ${Math.abs(player.currentStreak)} game loss streak`;
+    }
+
+    // Format role preferences
+    const roleDisplay = player.roles && player.roles.length === 5 ? 
+      player.roles.map((role, index) => `${index + 1}. ${role}`).join('\n') : 
+      "Role preferences not set";
+
+    // Format duo partner info
+    let duoDisplay = "None";
+    if (player.duoPartner) {
+      try {
+        const partnerUser = await client.users.fetch(player.duoPartner);
+      } catch (error) {
+        console.log(`Could not fetch username for duo partner ${player.duoPartner}`);
+      }
+      duoDisplay = `<@${player.duoPartner}>`;
+    }
+
+    // Format DM notifications
+    const dmStatus = player.dmNotifications ? "🔔 Enabled" : "🔕 Disabled";
+
+    // Check timeout status
+    const timeoutStatus = isUserInTimeout(userId);
+    const timeoutInfo = getTimeoutInfo(userId);
+    
+    // Get weekly reset information - ensure it's in the future
+    let weeklyResetTime = playerData._timeoutTracking.weeklyReset;
+    const now = Date.now();
+    
+    // If the reset time is in the past, calculate the next one
+    if (weeklyResetTime <= now) {
+      // Find the next Friday reset (weekly from the stored time)
+      const weeksToAdd = Math.ceil((now - weeklyResetTime) / WEEKLY_RESET_MS);
+      weeklyResetTime += weeksToAdd * WEEKLY_RESET_MS;
+    }
+    
+    const resetDisplay = createDiscordTimestamp(weeklyResetTime, 'R');
+    
+    // Format timeout information
+    let timeoutDisplay = "";
+    let offenseDisplay = "No queue timeout offenses";
+    
+    if (timeoutStatus.offenses > 0) {
+      // Show offense history with clear explanation
+      const offenseLevels = [
+        "1st offense: 1 minute",
+        "2nd offense: 5 minutes", 
+        "3rd offense: 25 minutes",
+        "4th offense: 1 hour",
+        "5th+ offense: 24 hours"
+      ];
+      
+      const currentLevel = Math.min(timeoutStatus.offenses, TIMEOUT_LEVELS.length) - 1;
+      const nextLevel = Math.min(timeoutStatus.offenses + 1, TIMEOUT_LEVELS.length) - 1;
+      
+      offenseDisplay = `**${timeoutStatus.offenses} offense${timeoutStatus.offenses > 1 ? 's' : ''}** (${offenseLevels[currentLevel]})`;
+      
+      if (timeoutStatus.offenses < TIMEOUT_LEVELS.length) {
+        offenseDisplay += `\nNext offense: ${offenseLevels[nextLevel]}`;
+      }
+      
+      offenseDisplay += `\nPenalties reset: ${resetDisplay}`;
+    }
+
+    if (timeoutStatus.inTimeout) {
+      const timeLeft = formatTimeLeft(timeoutStatus.timeLeft);
+      const timeoutEnd = Date.now() + timeoutStatus.timeLeft;
+      
+      timeoutDisplay = `**Time remaining:** ${timeLeft}\n`;
+      timeoutDisplay += `**Ends:** ${createDiscordTimestamp(timeoutEnd, 'F')}`;
+    }
+
+    // Create the embed
+    const embed = new EmbedBuilder()
+      .setTitle(`📊 Player Information`)
+      .setDescription(`Stats for <@${userId}>`)
+      .setColor(timeoutStatus.inTimeout ? 0xff0000 : 0x0099FF)
+      .addFields(
+        {
+          name: "🎮 Rank Information",
+          value: `**Rank:** ${formatRankDisplay(player.rank, player.division, player.lp)}\n**Elo:** ${currentIHP}`,
+          inline: true
+        },
+        {
+          name: "📈 Match Record",
+          value: `**Record:** ${player.wins}W ${player.losses}L\n**Win Rate:** ${winRate}%\n**Net Wins:** ${netWins > 0 ? '+' : ''}${netWins}`,
+          inline: true
+        },
+        {
+          name: "🔥 Current Streak",
+          value: streakDisplay,
+          inline: true
+        },
+        {
+          name: "🎯 Role Preferences",
+          value: `\`\`\`${roleDisplay}\`\`\``,
+          inline: false
+        },
+        {
+          name: "🤝 Duo Partner",
+          value: duoDisplay,
+          inline: true
+        },
+        {
+          name: "🔔 DM Notifications",
+          value: dmStatus,
+          inline: true
+        }
+      )
+      .setFooter({ text: `Player ID: ${userId}` })
+      .setTimestamp();
+
+    // Add timeout information if applicable
+    if (timeoutStatus.inTimeout) {
+      embed.addFields({
+        name: "⏰ Queue Timeout Active",
+        value: timeoutDisplay,
+        inline: false
+      });
+    }
+
+    // Add offense history if any offenses exist
+    if (timeoutStatus.offenses > 0) {
+      embed.addFields({
+        name: "📋 Queue Timeout Offenses",
+        value: offenseDisplay,
+        inline: false
+      });
+    }
+
+    // Add OP.GG link if available
+    if (player.summonerName) {
+      embed.addFields({
+        name: "🔗 OP.GG Profile",
+        value: `[View OP.GG](${player.summonerName})`,
+        inline: true
+      });
+    }
+
+    await message.channel.send({ embeds: [embed] });
+  }
     // ---------------- !register ----------------
     if (cmd === "!register") {
       const userId = message.author.id;
@@ -3545,52 +3026,6 @@ client.on("messageCreate", async (message) => {
           await startReadyCheck(message.channel);
       }
   }
-
-    // 4fun force ready command
-    if (cmd === "!4funforceready") {
-      if (!message.member.permissions.has("ManageGuild")) {
-        return message.reply("❌ Only staff members can use this command.");
-      }
-
-      if (!queue4fun || queue4fun.length < QUEUE4FUN_SIZE) {
-        return message.reply("⚠️ There isn't an active 4fun ready check right now.");
-      }
-
-      message.channel.send("✅ 4Fun Force-ready activated — all players are now marked ready!");
-
-      if (active4funReadyCheck && active4funReadyCheck.collector) {
-        try {
-          const curMsg = active4funReadyCheck.msg;
-          try {
-            const infoEmbed = EmbedBuilder.from(curMsg.embeds?.[0] || embed)
-              .setDescription("✅ 4Fun Force-ready activated by staff. Match is starting!")
-              .setColor(0x00ff00);
-            await curMsg.edit({ embeds: [infoEmbed], components: [] }).catch(() => {});
-          } catch (e) { }
-
-          active4funReadyCheck.collector.stop("all_ready");
-        } catch (err) {
-          console.error("Error stopping active 4fun ready check:", err);
-          await make4funTeams(message.channel);
-        }
-      } else {
-        await make4funTeams(message.channel);
-      }
-    }
-
-    // 4fun end match command
-    if (cmd === "!4funendmatch") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
-        return message.reply("❌ Only staff members can use this command.");
-      }
-      
-      const team = args[0];
-      if (!team || (team !== "1" && team !== "2")) {
-        return message.reply("Usage: !4funendmatch <1|2>");
-      }
-      
-      end4funMatch(message.channel, team);
-    }
 
     // ---------------- !mystreak ----------------
     if (cmd === "!mystreak") {
@@ -4737,54 +4172,210 @@ client.on("messageCreate", async (message) => {
   }
 }
 
-  // ---------------- !ban ----------------
-    if (cmd === "!queueban") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
-        return message.reply("❌ Only staff members can use this command.");
-      }
-
-      const userMention = args[0];
-      if (!userMention) return message.reply("Usage: !queueban <@user>");
-
-      const userId = userMention.replace(/[<@!>]/g, "");
-
-      if (bannedUsers.has(userId)) {
-        return message.reply("⚠️ That user is already banned from queuing.");
-      }
-
-      bannedUsers.add(userId);
-      saveData();
-
-      // Remove them from queue if they're in it
-      if (queue.includes(userId)) {
-        queue = queue.filter((id) => id !== userId);
-        saveData();
-        await updateQueueMessage();
-      }
-
-      message.channel.send(`🚫 <@${userId}> has been **banned** from queuing.`);
+  // ---------------- !queueban (with duration) ----------------
+  if (cmd === "!queueban") {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+      return message.reply("❌ Only staff members can use this command.");
     }
 
-    // ---------------- !unban ----------------
-    if (cmd === "!queueunban") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
-        return message.reply("❌ Only staff members can use this command.");
-      }
-
-      const userMention = args[0];
-      if (!userMention) return message.reply("Usage: !queueunban <@user>");
-
-      const userId = userMention.replace(/[<@!>]/g, "");
-
-      if (!bannedUsers.has(userId)) {
-        return message.reply("⚠️ That user is not currently banned.");
-      }
-
-      bannedUsers.delete(userId);
-      saveData();
-
-      message.channel.send(`✅ <@${userId}> has been **unbanned** and can queue again.`);
+    const userMention = args[0];
+    const durationString = args[1]; // e.g., "1h", "30m", "1d", "2w"
+    
+    if (!userMention) {
+      return message.reply("Usage: !queueban <@user> [duration]\nExamples:\n`!queueban @user 1h` - 1 hour\n`!queueban @user 30m` - 30 minutes\n`!queueban @user 2d` - 2 days\n`!queueban @user 1w` - 1 week\n`!queueban @user` - permanent ban");
     }
+
+    const userId = userMention.replace(/[<@!>]/g, "");
+
+    // Parse duration if provided
+    let banDuration = 0; // 0 means permanent
+    let expirationTime = 0;
+    let durationDisplay = "permanently";
+
+    if (durationString) {
+      const duration = parseDuration(durationString);
+      if (duration === null) {
+        return message.reply("❌ Invalid duration format. Use: 1h, 30m, 2d, 1w, etc.");
+      }
+      
+      banDuration = duration;
+      expirationTime = Date.now() + banDuration;
+      durationDisplay = formatTimeLeft(banDuration);
+    }
+
+    // Check if user is already banned
+    const existingBan = bannedUsers.get(userId);
+    if (existingBan) {
+      const isPermanent = existingBan === 0;
+      if (isPermanent) {
+        return message.reply("⚠️ That user is already permanently banned from queuing.");
+      } else {
+        const timeLeft = formatTimeLeft(existingBan - Date.now());
+        return message.reply(`⚠️ That user is already banned from queuing for ${timeLeft}.`);
+      }
+    }
+
+    // Add to banned users with expiration time (0 = permanent)
+    bannedUsers.set(userId, expirationTime);
+    saveData();
+
+    // Remove them from queue if they're in it
+    if (queue.includes(userId)) {
+      queue = queue.filter((id) => id !== userId);
+      saveData();
+      await updateQueueMessage();
+    }
+
+    const banMessage = `🚫 <@${userId}> has been **banned** from queuing ${durationDisplay}.`;
+    message.channel.send(banMessage);
+
+    // If temporary ban, set up automatic unban
+    if (banDuration > 0) {
+      setLongTimeout(async () => {
+        if (bannedUsers.get(userId) === expirationTime) {
+          bannedUsers.delete(userId);
+          saveData();
+          
+          // Notify in the same channel where the ban was issued
+          try {
+            await message.channel.send(`✅ <@${userId}>'s queue ban has expired. They can now queue again.`);
+          } catch (error) {
+            console.error("Failed to send unban notification:", error);
+          }
+        }
+      }, banDuration);
+    }
+  }
+
+  // ---------------- !queueunban (updated to handle both permanent and temporary) ----------------
+  if (cmd === "!queueunban") {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+      return message.reply("❌ Only staff members can use this command.");
+    }
+
+    const userMention = args[0];
+    if (!userMention) return message.reply("Usage: !queueunban <@user>");
+
+    const userId = userMention.replace(/[<@!>]/g, "");
+
+    if (!bannedUsers.has(userId)) {
+      return message.reply("⚠️ That user is not currently banned.");
+    }
+
+    bannedUsers.delete(userId);
+    saveData();
+
+    message.channel.send(`✅ <@${userId}> has been **unbanned** and can queue again.`);
+  }
+
+  // ---------------- Check ban status ----------------
+  if (cmd === "!banstatus") {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+      return message.reply("❌ Only staff members can use this command.");
+    }
+
+    const userMention = args[0];
+    if (!userMention) return message.reply("Usage: !banstatus <@user>");
+
+    const userId = userMention.replace(/[<@!>]/g, "");
+    const banExpiration = bannedUsers.get(userId);
+
+    if (banExpiration === undefined) {
+      return message.reply(`✅ <@${userId}> is not currently banned from queuing.`);
+    }
+
+    const isPermanent = banExpiration === 0;
+    let statusMessage;
+
+    if (isPermanent) {
+      statusMessage = `🔴 <@${userId}> is **permanently banned** from queuing.`;
+    } else {
+      const timeLeft = formatTimeLeft(banExpiration - Date.now());
+      const expiresAt = createDiscordTimestamp(banExpiration, 'F');
+      statusMessage = `🟡 <@${userId}> is **temporarily banned** from queuing.\n⏰ Time remaining: ${timeLeft}\n🕒 Expires: ${expiresAt}`;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle("🚫 Queue Ban Status")
+      .setDescription(statusMessage)
+      .setColor(isPermanent ? 0xff0000 : 0xffa500)
+      .setTimestamp();
+
+    await message.channel.send({ embeds: [embed] });
+  }
+
+  // ---------------- Add a command to list all active bans ----------------
+  if (cmd === "!banlist") {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+      return message.reply("❌ Only staff members can use this command.");
+    }
+
+    if (bannedUsers.size === 0) {
+      return message.reply("✅ There are no active queue bans.");
+    }
+
+    const now = Date.now();
+    const activeBans = Array.from(bannedUsers.entries())
+      .filter(([userId, expiration]) => {
+        // Filter out expired temporary bans
+        const isPermanent = expiration === 0;
+        const isTemporaryExpired = expiration > 0 && now > expiration;
+        
+        if (isTemporaryExpired) {
+          // Clean up expired ban
+          bannedUsers.delete(userId);
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        // Sort: permanent bans first, then temporary by expiration time
+        if (a[1] === 0) return -1;
+        if (b[1] === 0) return 1;
+        return a[1] - b[1];
+      });
+
+    if (activeBans.length === 0) {
+      saveData();
+      return message.reply("✅ There are no active queue bans.");
+    }
+
+    const permanentBans = activeBans.filter(([_, expiration]) => expiration === 0);
+    const temporaryBans = activeBans.filter(([_, expiration]) => expiration > 0);
+
+    const embed = new EmbedBuilder()
+      .setTitle("🚫 Active Queue Bans")
+      .setColor(0xff0000)
+      .setTimestamp();
+
+    if (permanentBans.length > 0) {
+      const permanentList = permanentBans.map(([userId]) => `<@${userId}>`).join('\n');
+      embed.addFields({
+        name: `🔴 Permanent Bans (${permanentBans.length})`,
+        value: permanentList || "None",
+        inline: false
+      });
+    }
+
+    if (temporaryBans.length > 0) {
+      const temporaryList = temporaryBans.map(([userId, expiration]) => {
+        const timeLeft = formatTimeLeft(expiration - now);
+        const expiresAt = createDiscordTimestamp(expiration, 'F');
+        return `<@${userId}> - ${timeLeft} (expires ${expiresAt})`;
+      }).join('\n');
+      
+      embed.addFields({
+        name: `🟡 Temporary Bans (${temporaryBans.length})`,
+        value: temporaryList || "None",
+        inline: false
+      });
+    }
+
+    embed.setFooter({ text: `Total active bans: ${activeBans.length}` });
+
+    await message.channel.send({ embeds: [embed] });
+    saveData(); // Save after cleaning expired bans
+  }
 
   if (cmd === "!remove") {
     if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
@@ -4944,139 +4535,6 @@ client.on("messageCreate", async (message) => {
       .setTimestamp();
 
     await message.channel.send({ embeds: [embed] });
-  }
-
-  // ---------------- !duobreak ----------------
-  if (cmd === "!duobreak") {
-      const playerId = message.author.id;
-      const player = ensurePlayer(playerId);
-
-      if (!player.fun.duoPartner) {
-          return message.reply("❌ You are not in a duo partnership.");
-      }
-
-      const partnerId = player.fun.duoPartner;
-      const partner = ensurePlayer(partnerId);
-
-      // Remove from queue if either is queued
-      if (queue4fun.includes(playerId)) {
-          queue4fun = queue4fun.filter(id => id !== playerId);
-      }
-      if (queue4fun.includes(partnerId)) {
-          queue4fun = queue4fun.filter(id => id !== partnerId);
-      }
-
-      // Break the duo
-      player.fun.duoPartner = null;
-      partner.fun.duoPartner = null;
-      
-      saveData();
-      await update4funQueueMessage();
-
-      await message.reply(`✅ Duo partnership with <@${partnerId}> has been dissolved.`);
-  }
-
-  // ---------------- !duostatus ----------------
-  if (cmd === "!duostatus") {
-      const userMention = args[0] || message.author.id;
-      const userId = userMention.replace(/[<@!>]/g, "") || message.author.id;
-      
-      const player = ensurePlayer(userId);
-      const isSelf = userId === message.author.id;
-
-      if (!player.fun.duoPartner) {
-          const messageText = isSelf ? 
-              "You are not currently in a duo partnership. Click the '🤝 Request Duo' button in the 4fun queue to form one." :
-              `<@${userId}> is not in a duo partnership.`;
-          return message.reply(messageText);
-      }
-
-      const partner = ensurePlayer(player.fun.duoPartner);
-      const partnerInQueue = queue4fun.includes(player.fun.duoPartner);
-      const playerInQueue = queue4fun.includes(userId);
-
-      const embed = new EmbedBuilder()
-          .setTitle("🤝 Duo Status")
-          .setDescription(isSelf ? 
-              `You are duo partners with <@${player.fun.duoPartner}>` :
-              `<@${userId}> is duo partners with <@${player.fun.duoPartner}>`)
-          .addFields(
-              { name: "Duo Partner", value: `<@${player.fun.duoPartner}>`, inline: true },
-              { name: "Queue Status", value: playerInQueue && partnerInQueue ? "✅ Both in queue" : playerInQueue ? "🟡 You in queue" : partnerInQueue ? "🟡 Partner in queue" : "❌ Neither in queue", inline: true }
-          )
-          .setColor(0x0099FF)
-          .setTimestamp();
-
-      await message.channel.send({ embeds: [embed] });
-  }
-
-  // ---------------- !simulate4fun ----------------
-  if (cmd === "!simulate4fun") {
-      if (!message.member.permissions.has("ManageGuild")) {
-          return message.reply("❌ Only staff members can use this command.");
-      }
-
-      const count = parseInt(args[0] || "10");
-      
-      // Get registered players with summoner names (no role requirements for 4fun)
-      const eligiblePlayers = Object.keys(playerData).filter(id => {
-          // Filter out system keys
-          if (id.startsWith('_')) return false;
-          
-          const player = playerData[id];
-          
-          // Check for summoner name only (no role requirements for 4fun)
-          if (!player?.summonerName) return false;
-          
-          return true;
-      });
-
-      if (eligiblePlayers.length === 0) {
-          return message.reply("❌ No registered players found.");
-      }
-
-      // Clear current 4fun queue first
-      queue4fun = [];
-      
-      // Shuffle eligible players array to get random selection
-      const shuffledPlayers = [...eligiblePlayers].sort(() => Math.random() - 0.5);
-      
-      // Add random players to 4fun queue (up to the requested count)
-      const playersToAdd = Math.min(count, shuffledPlayers.length);
-      let addedCount = 0;
-
-      for (let i = 0; i < playersToAdd; i++) {
-          const playerId = shuffledPlayers[i];
-          
-          // Additional safety check
-          const player = playerData[playerId];
-          if (player.summonerName) {
-              if (!queue4fun.includes(playerId)) {
-                  queue4fun.push(playerId);
-                  addedCount++;
-              }
-          }
-      }
-
-      saveData();
-      
-      let response = `🎉 Randomly added ${addedCount} players to 4fun queue. 4Fun Queue = ${queue4fun.length}/${QUEUE4FUN_SIZE}`;
-
-      if (addedCount < count) {
-          response += `\nℹ️ Only ${eligiblePlayers.length} registered players available.`;
-      }
-
-      // Show which players were added
-      const addedPlayerMentions = queue4fun.map(id => `<@${id}>`).join(', ');
-      response += `\n\n**Players added:** ${addedPlayerMentions}`;
-      
-      message.channel.send(response);
-      await update4funQueueMessage();
-
-      // Start 4fun ready check if queue becomes full
-      if (queue4fun.length === QUEUE4FUN_SIZE && !active4funReadyCheck) {
-          await start4funReadyCheck(message.channel);
-      }
   }
 
   if (cmd === "!simulate") {
@@ -5619,7 +5077,12 @@ client.on("messageCreate", async (message) => {
 // ---------------- MATCHMAKING WITH ROLE ASSIGNMENT ----------------
 async function makeTeams(channel) {
   trackRequest();
-  
+
+  const guild = channel.guild;
+
+  const matchId = await getNextMatchId();
+  console.log(`🎯 Starting team creation for match ${matchId}`);
+
   // Filter out any players with block conflicts
   const playersWithBlockConflicts = new Set();
   for (const playerId of queue) {
@@ -5854,6 +5317,14 @@ async function makeTeams(channel) {
   console.log(`🎯 Role optimization: ${usedRoleOptimization ? 'APPLIED' : 'NOT APPLIED'}`);
   console.log(`🤝 Duos kept together: ${usedDuoAssignment ? 'YES' : 'NO'}`);
 
+  // Assign team roles to players
+  const roleAssignment = await assignTeamRoles(guild, bestTeam1, bestTeam2);
+  if (roleAssignment) {
+    console.log(`✅ Successfully assigned team roles for match ${matchId}`);
+  } else {
+    console.log(`❌ Failed to assign team roles for match ${matchId}`);
+  }
+
   // Notify if duos were broken for balance
   if (duos.length > 0) {
     const brokenDuos = [];
@@ -5891,9 +5362,9 @@ async function makeTeams(channel) {
       const intactDuosList = intactDuos.map(duo => `<@${duo[0]}> + <@${duo[1]}>`).join(', ');
       console.log(`✅ The following duos remained intact: ${intactDuosList}`);
       // Optional: Uncomment the line below if you want to also show intact duos in chat
-      // await channel.send({
-      //   content: `✅ The following duos remained together: ${intactDuosList}`
-      // });
+      await channel.send({
+        content: `✅ The following duos remained together: ${intactDuosList}`
+      });
     }
 
     console.log(`📊 Duo Status: ${brokenDuos.length} broken, ${intactDuos.length} intact`);
@@ -6116,7 +5587,6 @@ async function makeTeams(channel) {
 
   // ---------------- CREATE SEPARATE MATCH CATEGORY FOR EACH MATCH ----------------
   // Look for all preset match categories "Match 1" - "Match 10"
-  const guild = channel.guild;
   // Force categories into correct 1-10 order regardless of Discord's order
 const presetCategories = [];
 for (let i = 1; i <= 10; i++) {
@@ -6146,8 +5616,6 @@ console.log(`📁 Found categories: ${presetCategories.map(c => `Match ${c.numbe
   selectedCategoryNumber = presetCategories[lastUsedCategoryIndex].number;
 
   console.log(`✅ Selected Match ${selectedCategoryNumber} for new match (round-robin index: ${lastUsedCategoryIndex})`);
-
-  const matchId = await getNextMatchId();
 
   // Rename the category to the match ID
   await selectedCategory.setName(matchId.toString());
@@ -6291,7 +5759,7 @@ console.log(`📁 Found categories: ${presetCategories.map(c => `Match ${c.numbe
     team1: bestTeam1,
     team2: bestTeam2,
     matchChannel,
-    team1VC,
+    team1VC, 
     team2VC,
     team1Roles,
     team2Roles,
@@ -6308,7 +5776,8 @@ console.log(`📁 Found categories: ${presetCategories.map(c => `Match ${c.numbe
       blue: team1Sorted[0],
       red: team2Sorted[0]
     } : null,
-    originalCategoryName: `Match ${selectedCategoryNumber}` // Store original name for restoration
+    originalCategoryName: `Match ${selectedCategoryNumber}`,
+    teamRoles: roleAssignment // Store the role info for cleanup
   };
 
   // Debug: Log what's actually being stored in matchData
@@ -6432,353 +5901,6 @@ console.log(`📁 Found categories: ${presetCategories.map(c => `Match ${c.numbe
   startVoteMessageFloodMonitoring(matchChannel, matchData, false);
   saveData();
   updateQueueMessage();
-}
-
-async function make4funTeams(channel) {
-  trackRequest();
-  
-  const players = [...queue4fun];
-  
-  // Initialize hidden MMR for new players based on their main rank
-  players.forEach(playerId => {
-    const player = ensurePlayer(playerId);
-    if (player.fun.hiddenMMR === 0 && player.summonerName) {
-      // Set initial hidden MMR based on main rank IHP
-      player.fun.hiddenMMR = getIHP(player);
-    }
-  });
-
-  let bestTeam1 = null;
-  let bestTeam2 = null;
-  let bestDiff = Infinity;
-  let bestAvg1 = 0;
-  let bestAvg2 = 0;
-
-  function generateCombinations(arr, k) {
-    const result = [];
-    
-    function backtrack(start, current) {
-      if (current.length === k) {
-        result.push([...current]);
-        return;
-      }
-      
-      for (let i = start; i < arr.length; i++) {
-        current.push(arr[i]);
-        backtrack(i + 1, current);
-        current.pop();
-      }
-    }
-    
-    backtrack(0, []);
-    return result;
-  }
-
-  console.log(`🔍 Starting 4fun team combination search for ${players.length} players`);
-  const allTeam1Combinations = generateCombinations(players, 5);
-  
-  console.log(`📊 Evaluating ${allTeam1Combinations.length} possible 4fun team combinations`);
-  
-  for (const team1 of allTeam1Combinations) {
-    const team2 = players.filter(player => !team1.includes(player));
-    
-    // Calculate average hidden MMR for both teams
-    const sum1 = team1.reduce((sum, id) => sum + ensurePlayer(id).fun.hiddenMMR, 0);
-    const sum2 = team2.reduce((sum, id) => sum + ensurePlayer(id).fun.hiddenMMR, 0);
-    const avg1 = sum1 / 5;
-    const avg2 = sum2 / 5;
-    const diff = Math.abs(avg1 - avg2);
-    
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      bestTeam1 = team1;
-      bestTeam2 = team2;
-      bestAvg1 = avg1;
-      bestAvg2 = avg2;
-    }
-    
-    if (bestDiff === 0) break;
-  }
-
-  console.log(`✅ Best 4fun team combination found with MMR difference: ${bestDiff.toFixed(2)}`);
-  console.log(`🔵 Team 1 Avg MMR: ${bestAvg1.toFixed(2)}, 🔴 Team 2 Avg MMR: ${bestAvg2.toFixed(2)}`);
-
-  const guild = channel.guild;
-
-  // Look for all preset match categories "Match 1" - "Match 10"
-  const presetCategories = [];
-  for (let i = 1; i <= 10; i++) {
-    const category = guild.channels.cache.find(
-      channel => channel.name === `Match ${i}` && channel.type === 4
-    );
-    if (category) {
-      presetCategories.push({
-        category,
-        number: i
-      });
-    }
-  }
-
-  if (presetCategories.length === 0) {
-    return channel.send("❌ No preset match categories found (Match 1 - Match 10). Please create them first.");
-  }
-
-  // Sort categories by number to ensure proper cycling
-  presetCategories.sort((a, b) => a.number - b.number);
-
-  // ROUND-ROBIN CATEGORY SELECTION - Always use next category in sequence
-  lastUsedCategoryIndex = (lastUsedCategoryIndex + 1) % presetCategories.length;
-  selectedCategory = presetCategories[lastUsedCategoryIndex].category;
-  selectedCategoryNumber = presetCategories[lastUsedCategoryIndex].number;
-
-  console.log(`✅ Selected Match ${selectedCategoryNumber} for new 4fun match (round-robin index: ${lastUsedCategoryIndex})`);
-
-  const matchId = await getNextMatchId();
-
-  // Rename the category to the match ID
-  await selectedCategory.setName(matchId.toString());
-  console.log(`✅ Renamed category "Match ${selectedCategoryNumber}" to 4fun match ID: ${matchId}`);
-
-  // Create 4fun match text channel inside the selected category
-  const matchChannel = await guild.channels.create({ 
-    name: `4fun-match-${matchId}`, 
-    type: 0, 
-    parent: selectedCategory.id,
-    permissionOverwrites: [
-      {
-        id: guild.id,
-      },
-      ...bestTeam1.map(playerId => ({
-        id: playerId,
-        type: 1,
-        deny: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
-      })),
-      ...bestTeam2.map(playerId => ({
-        id: playerId,
-        type: 1,
-        deny: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
-      }))
-    ]
-  });
-
-  // Create 4fun team voice channels inside the selected category
-  const team1VC = await guild.channels.create({ 
-    name: `Team 1`,
-    type: 2, 
-    parent: selectedCategory.id,
-    permissionOverwrites: [
-      {
-        id: guild.id,
-        deny: ['ViewChannel', 'Connect'],
-        allow: ['Speak'],
-      },
-      ...bestTeam1.map(playerId => ({
-        id: playerId,
-        type: 1,
-        deny: ['ViewChannel', 'Connect', 'Speak']
-      }))
-    ]
-  });
-
-  const team2VC = await guild.channels.create({ 
-    name: `Team 2`,
-    type: 2, 
-    parent: selectedCategory.id,
-    permissionOverwrites: [
-      {
-        id: guild.id,
-        deny: ['ViewChannel', 'Connect'],
-        allow: ['Speak'],
-      },
-      ...bestTeam2.map(playerId => ({
-        id: playerId,
-        type: 1,
-        deny: ['ViewChannel', 'Connect', 'Speak']
-      }))
-    ]
-  });
-
-  const buildMulti = (team) => {
-    const summoners = team
-      .map((id) => playerData[id]?.summonerName)
-      .filter(Boolean)
-      .map((url) => {
-        try {
-          const parts = url.split("/");
-          const namePart = decodeURIComponent(parts[parts.length - 1]);
-          return namePart.replace("-", "%23").replace(/\s+/g, "+");
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
-    if (summoners.length === 0) return "https://www.op.gg/";
-    return `https://www.op.gg/lol/multisearch/na?summoners=${summoners.join("%2C")}`;
-  };
-
-  const team1Link = buildMulti(bestTeam1);
-  const team2Link = buildMulti(bestTeam2);
-
-  // Format team display with normal ranks instead of 4fun points
-  function formatTeamDisplay(team) {
-    return team
-      .map((id) => {
-        const player = playerData[id];
-        const rankDisplay = formatRankDisplay(player.rank, player.division, player.lp);
-        const funPoints = player.fun.points;
-        return `<@${id}> / ${rankDisplay} (${funPoints} 4fun pts)`;
-      })
-      .join("\n");
-  }
-
-  let draftSuccess = false;
-  let draftLinks = {
-    blue: "https://draftlol.dawe.gg",
-    red: "https://draftlol.dawe.gg", 
-    spectator: "https://draftlol.dawe.gg",
-  };
-
-  try {
-    console.log("🔄 Starting 4fun draft lobby creation...");
-    draftLinks = await createDraftLolLobby();
-    draftSuccess = true;
-    console.log(`✅ 4fun Draft links generated successfully`);
-  } catch (err) {
-    console.error("❌ Critical error creating 4fun draft lobby:", err);
-    draftSuccess = false;
-  }
-
-  // Store the original category name in match data so we can restore it later
-  const matchData = {
-    team1: bestTeam1,
-    team2: bestTeam2,
-    matchChannel,
-    team1VC,
-    team2VC,
-    blue: draftLinks.blue,
-    red: draftLinks.red,
-    spectator: draftLinks.spectator,
-    matchId: matchId,
-    matchMessageId: null,
-    votes: {
-      team1: new Set(),
-      team2: new Set()
-    },
-    drafters: draftSuccess ? {
-      blue: team1Sorted[0],
-      red: team2Sorted[0]
-    } : null,
-    originalCategoryName: `Match ${selectedCategoryNumber}` // Store original name for restoration
-  };
-
-  const components = [];
-
-  if (draftSuccess) {
-    const team1Sorted = [...bestTeam1].sort((a,b) => playerData[b].fun.hiddenMMR - playerData[a].fun.hiddenMMR);
-    const team2Sorted = [...bestTeam2].sort((a,b) => playerData[b].fun.hiddenMMR - playerData[a].fun.hiddenMMR);
-
-    // Store drafters in match data
-    matchData.drafters = {
-      blue: team1Sorted[0],
-      red: team2Sorted[0]
-    };
-
-    const blueDraftButton = new ButtonBuilder()
-      .setCustomId('blue_draft_4fun')
-      .setLabel('🟦 Blue Team Draft')
-      .setStyle(ButtonStyle.Primary);
-
-    const redDraftButton = new ButtonBuilder()
-      .setCustomId('red_draft_4fun')
-      .setLabel('🔴 Red Team Draft')
-      .setStyle(ButtonStyle.Danger);
-
-    const spectatorButton = new ButtonBuilder()
-      .setCustomId('spectator_draft_4fun')
-      .setLabel('👁️ Spectator View')
-      .setStyle(ButtonStyle.Secondary);
-
-    const teamRow = new ActionRowBuilder().addComponents(
-      blueDraftButton,
-      redDraftButton,
-      spectatorButton
-    );
-
-    components.push(teamRow);
-  }
-
-  const managementRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`report_4fun_win_1`)
-      .setLabel('🏆 Team 1 Won')
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId(`report_4fun_win_2`)
-      .setLabel('🏆 Team 2 Won')
-      .setStyle(ButtonStyle.Success)
-  );
-
-  components.push(managementRow);
-
-  let embedDescription = `**4Fun Match**\n\n` +
-    `**Team OP.GG Links:**\n` +
-    `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
-    `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
-    `**After match, vote with Team Won buttons - 6/10 votes needed**`;
-
-  // Update embed description if draft was successful
-  if (draftSuccess) {
-    const team1Sorted = [...bestTeam1].sort((a,b) => playerData[b].fun.hiddenMMR - playerData[a].fun.hiddenMMR);
-    const team2Sorted = [...bestTeam2].sort((a,b) => playerData[b].fun.hiddenMMR - playerData[a].fun.hiddenMMR);
-    
-    embedDescription = `**4Fun Match**\n\n` +
-      `**Assigned Drafters:**\n` +
-      `🔵 Blue Team: <@${team1Sorted[0]}> (Highest MMR)\n` +
-      `🔴 Red Team: <@${team2Sorted[0]}> (Highest MMR)\n\n` +
-      `**Team OP.GG Links:**\n` +
-      `[🔵 Blue Team Multi OP.GG](${team1Link})\n` +
-      `[🔴 Red Team Multi OP.GG](${team2Link})\n\n` +
-      `**Draft Access:**\n` +
-      `• Team draft links: Assigned drafters + Staff only\n` +
-      `• Spectator link: Anyone in server\n\n` +
-      `**After match, vote with Team Won buttons - 6/10 votes needed**`;
-  }
-
-  const matchEmbed = new EmbedBuilder()
-    .setTitle("🎉 4Fun Match Lobby")
-    .setDescription(embedDescription)
-    .addFields(
-      {
-        name: `🔵 Team 1 (Avg MMR: ${Math.round(bestAvg1)})`,
-        value: formatTeamDisplay(bestTeam1),
-        inline: false,
-      },
-      {
-        name: `🔴 Team 2 (Avg MMR: ${Math.round(bestAvg2)})`,
-        value: formatTeamDisplay(bestTeam2),
-        inline: false,
-      }
-    )
-    .setColor(0xff00ff);
-
-  const messageOptions = {
-    embeds: [matchEmbed],
-    components: components
-  };
-
-  if (!draftSuccess) {
-    messageOptions.content = `❌ Failed to create draft lobby. Players will need to make draft at https://draftlol.dawe.gg/ manually.`;
-  }
-
-  const matchMessage = await matchChannel.send(messageOptions);
-  matchData.matchMessageId = matchMessage.id;
-
-  matches4fun.set(matchChannel.id, matchData);
-
-  queue4fun = [];
-  startVoteMessageFloodMonitoring(matchChannel, matchData, false);
-  saveData();
-  update4funQueueMessage();
 }
 
 // ---------------- END MATCH ----------------
@@ -7156,6 +6278,14 @@ async function endMatch(channel, winner, isVoided = false) {
       await historyChannel.send({ embeds: [rankChangeEmbed] });
     }
 
+    // Remove team roles from players
+    try {
+      await removeTeamRoles(guild, team1, team2);
+      console.log(`✅ Removed team roles for match ${matchId}`);
+    } catch (error) {
+      console.error(`❌ Error removing team roles for match ${matchId}:`, error);
+    }
+
     // Remove from active matches IMMEDIATELY to prevent further processing
     matches.delete(channelId);
     console.log(`✅ Removed match ${matchId} from active matches`);
@@ -7206,82 +6336,6 @@ async function endMatch(channel, winner, isVoided = false) {
   }
 }
 
-async function end4funMatch(channel, winner) {
-  // Clean up vote timers
-  cleanupVoteTimers(channel.id);
-  const match = matches4fun.get(channel.id);
-  if (!match) {
-    return channel.send("❌ No active 4fun match found in this channel.");
-  }
-
-  const { team1, team2, matchChannel, team1VC, team2VC, matchId, originalCategoryName } = match;
-  const guild = channel.guild;
-
-  const winners = winner === "1" ? team1 : team2;
-  const losers = winner === "1" ? team2 : team1;
-
-  // Calculate team average MMR for Elo calculation
-  const winnersAvgMMR = winners.reduce((sum, id) => sum + ensurePlayer(id).fun.hiddenMMR, 0) / winners.length;
-  const losersAvgMMR = losers.reduce((sum, id) => sum + ensurePlayer(id).fun.hiddenMMR, 0) / losers.length;
-
-  // Update hidden MMR using same Elo system as main game
-  winners.forEach((id) => {
-    const p = ensurePlayer(id);
-    const oldMMR = p.fun.hiddenMMR;
-    
-    // Elo calculation
-    const expected = 1 / (1 + 10 ** ((losersAvgMMR - oldMMR) / 400));
-    const newMMR = oldMMR + 32 * (1 - expected);
-    
-    p.fun.hiddenMMR = newMMR;
-    p.fun.points = Math.max(0, p.fun.points + FUN_POINTS_PER_GAME); // Can't go below 0
-    p.fun.wins++;
-    p.fun.matchesPlayed++;
-  });
-
-  losers.forEach((id) => {
-    const p = ensurePlayer(id);
-    const oldMMR = p.fun.hiddenMMR;
-    
-    // Elo calculation
-    const expected = 1 / (1 + 10 ** ((winnersAvgMMR - oldMMR) / 400));
-    const newMMR = oldMMR + 32 * (0 - expected);
-    
-    p.fun.hiddenMMR = newMMR;
-    p.fun.points = Math.max(0, p.fun.points - FUN_POINTS_PER_GAME); // Can't go below 0
-    p.fun.losses++;
-    p.fun.matchesPlayed++;
-  });
-
-  saveData();
-
-  // Send confirmation message
-  await channel.send(`✅ 4Fun Match ${matchId} ended! ${winner === "1" ? "🟦 Team 1 (Blue)" : "🔴 Team 2 (Red)"} wins!`);
-
-  // Restore the original category name
-  try {
-    const category = matchChannel.parent;
-    if (category && category.type === 4) {
-      await category.setName(originalCategoryName);
-      console.log(`✅ Restored 4fun category name to "${originalCategoryName}"`);
-    }
-  } catch (err) {
-    console.error("Error restoring 4fun category name:", err);
-  }
-
-  // Delete match channels
-  try {
-    if (team1VC) await team1VC.delete().catch(console.error);
-    if (team2VC) await team2VC.delete().catch(console.error);
-    if (matchChannel) await matchChannel.delete().catch(console.error);
-  } catch (err) {
-    console.error("Error deleting 4fun match channels:", err);
-  }
-
-  // Remove from active matches
-  matches4fun.delete(channel.id);
-}
-
 // ---------------- READY ----------------
 const MAIN_GUILD_ID = "1423242905602101310";
 
@@ -7319,21 +6373,13 @@ client.once("ready", async () => {
     console.log("Created new queue channel");
   }
 
-  // 4fun queue setup - with improved existing message detection
-  let queue4funChannel = guild.channels.cache.find((c) => c.name === "4fun-queue");
-  if (!queue4funChannel) {
-    queue4funChannel = await guild.channels.create({ name: "4fun-queue", type: 0 });
-    console.log("Created new 4fun-queue channel");
-  }
-
   // These functions will now reuse existing messages if found
-  await post4funQueueMessage(queue4funChannel);
   await postQueueMessage(queueChannel);
-
   await updateLeaderboardChannel(guild);
   
   console.log('✅ Bot fully initialized with data loaded');
-  console.log('✅ Bot fully initialized with 4fun system');
+
+  cleanupExpiredBans();
 });
 
 // ---------------- WEB SERVER FOR RENDER ----------------
