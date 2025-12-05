@@ -5629,18 +5629,18 @@ console.log(`📁 Found categories: ${presetCategories.map(c => `Match ${c.numbe
     permissionOverwrites: [
       {
         id: guild.id, // @everyone
-        allow: ['ViewChannel']
+        deny: ['ViewChannel']
       },
       // Allow match participants to view and send messages
       ...bestTeam1.map(playerId => ({
         id: playerId,
         type: 1,
-        allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
+        deny: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
       })),
       ...bestTeam2.map(playerId => ({
         id: playerId,
         type: 1,
-        allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
+        deny: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
       }))
     ]
   });
