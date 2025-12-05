@@ -483,6 +483,24 @@ const ROLES = [
 ];
 
 // ---------------- HELPER FUNCTIONS ----------------
+function getMultiOPGG() {
+  const summoners = queue
+    .map((id) => playerData[id]?.summonerName)
+    .filter(Boolean)
+    .map((url) => {
+      try {
+        const parts = url.split("/");
+        const namePart = decodeURIComponent(parts[parts.length - 1]);
+        return namePart.replace("-", "%23").replace(/\s+/g, "+");
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  if (summoners.length === 0) return "https://www.op.gg/";
+  return `https://www.op.gg/lol/multisearch/na?summoners=${summoners.join("%2C")}`;
+}
+
 // Manages the vote status message
 async function updateOrCreateVoteMessage(channel, match) {
   const team1Votes = match.votes.team1.size;
@@ -1029,12 +1047,25 @@ async function sendEphemeralLeaderboard(interaction, sortType = "rank", page = 0
   };
 }
 
-// ---------------- READY CHECK ----------------
 async function startReadyCheck(channel) {
-  // Safety Check in startReadyCheck
-  if (queue.length !== QUEUE_SIZE) {
-    console.warn(`⚠️ Ready check attempted with ${queue.length} players, expected ${QUEUE_SIZE}`);
-    return;
+  // CRITICAL: Make a copy of the current queue to prevent race conditions
+  const currentQueue = [...queue];
+  
+  // Safety Check - Only start ready check with exactly QUEUE_SIZE players
+  if (currentQueue.length !== QUEUE_SIZE) {
+    console.warn(`⚠️ Ready check attempted with ${currentQueue.length} players, expected ${QUEUE_SIZE}`);
+    
+    // If we have fewer players than expected, update the queue display and return
+    if (currentQueue.length < QUEUE_SIZE) {
+      console.log(`🔄 Queue has ${currentQueue.length}/${QUEUE_SIZE} players, cancelling ready check`);
+      return;
+    }
+    
+    // If we have more players (shouldn't happen), use only the first QUEUE_SIZE
+    if (currentQueue.length > QUEUE_SIZE) {
+      console.warn(`⚠️ Queue has ${currentQueue.length} players, using first ${QUEUE_SIZE}`);
+      currentQueue.length = QUEUE_SIZE;
+    }
   }
   
   if (activeReadyCheck) {
@@ -1042,7 +1073,7 @@ async function startReadyCheck(channel) {
     return;
   }
 
-  const participants = [...queue];
+  const participants = currentQueue; // Use the snapshot, not the live queue
   const ready = new Set();
   const declined = new Set();
   const TIMEOUT = 65; // 60 seconds
@@ -1053,13 +1084,13 @@ async function startReadyCheck(channel) {
   let updateTimeout = null;
   const DEBOUNCE_DELAY = 300; // 300ms debounce
 
-  // Send DM notifications to all players in queue
+  // Send DM notifications to all players in the snapshot
   console.log("🔔 Sending ready check DM notifications...");
   for (const playerId of participants) {
     await sendReadyCheckDM(playerId, false);
   }
 
-  // Create the initial embed with Discord timestamp - REMOVED FOOTER
+  // Create the initial embed with Discord timestamp
   const createReadyCheckEmbed = () => {
     const readyArray = Array.from(ready);
     const waitingArray = participants.filter(id => !ready.has(id) && !declined.has(id));
@@ -1130,11 +1161,12 @@ async function startReadyCheck(channel) {
   const collector = msg.createMessageComponentCollector({ time: TIMEOUT * 1000 });
 
   // Register active ready-check so !forceready can stop it
-  activeReadyCheck = { msg, collector };
+  activeReadyCheck = { msg, collector, participants: new Set(participants) }; // Store participants in a Set for quick lookup
 
   collector.on("collect", async (i) => {
-    if (!participants.includes(i.user.id)) {
-        return i.reply({ content: "You're not in this queue.", ephemeral: true });
+    // CRITICAL FIX: Check if user is in the original participants, not current queue
+    if (!activeReadyCheck.participants.has(i.user.id)) {
+        return i.reply({ content: "You're not in this ready check.", ephemeral: true });
     }
 
     if (i.customId === "notready") {
@@ -1144,7 +1176,7 @@ async function startReadyCheck(channel) {
         const timeoutStatus = isUserInTimeout(i.user.id);
         const timeLeft = formatTimeLeft(timeoutStatus.timeLeft);
         
-        // Remove player from queue
+        // Remove player from queue (if they're still in it)
         queue = queue.filter((id) => id !== i.user.id);
         declined.add(i.user.id);
         saveData();
@@ -1181,8 +1213,9 @@ async function startReadyCheck(channel) {
       if (err.code !== 10062) console.error("Button deferUpdate error:", err);
     });
 
+    // CRITICAL FIX: Check against original participants count, not current queue
     if (ready.size === participants.length) {
-      // If all players are ready, update immediately (no debounce)
+      // If all original participants are ready, update immediately (no debounce)
       if (updateTimeout) {
         clearTimeout(updateTimeout);
       }
@@ -1202,11 +1235,21 @@ async function startReadyCheck(channel) {
     if (updateTimeout) {
       clearTimeout(updateTimeout);
     }
-    activeReadyCheck = null;
+    
+    // CRITICAL: Only process the ready check if we have enough ready players from the original set
+    const originalParticipantsCount = participants.length;
+    const readyCount = ready.size;
 
     let description = "";
     if (reason === "all_ready") {
-        description = "✅ All players ready. Match is starting!";
+        // Double-check we have all original participants ready
+        if (readyCount === originalParticipantsCount) {
+            description = "✅ All players ready. Match is starting!";
+        } else {
+            // This shouldn't happen, but if it does, treat as timeout
+            reason = "timeout";
+            description = `⌛ Ready check failed - only ${readyCount}/${originalParticipantsCount} players ready.`;
+        }
     } else if (reason === "declined") {
         description = "❌ A player declined the ready check and received a timeout penalty. Match canceled.";
     } else {
@@ -1215,6 +1258,7 @@ async function startReadyCheck(channel) {
         
         const notReady = participants.filter((id) => !ready.has(id) && !declined.has(id));
         if (notReady.length > 0) {
+            // Remove non-responders from queue
             queue = queue.filter((id) => !notReady.includes(id));
             saveData();
             await updateQueueMessage();
@@ -1263,7 +1307,11 @@ async function startReadyCheck(channel) {
       }
     }, 50000); // 50 seconds
 
-    if (reason === "all_ready") {
+    // Clear active ready check
+    activeReadyCheck = null;
+
+    // Only start match if we have all original participants ready
+    if (reason === "all_ready" && readyCount === originalParticipantsCount) {
         await makeTeams(channel);
     } else {
         await updateQueueMessage();
@@ -1558,24 +1606,6 @@ async function updateQueueMessage() {
   }
 
   updateQueueTimeout = setTimeout(async () => {
-    const getMultiOPGG = () => {
-      const summoners = queue
-        .map((id) => playerData[id]?.summonerName)
-        .filter(Boolean)
-        .map((url) => {
-          try {
-            const parts = url.split("/");
-            const namePart = decodeURIComponent(parts[parts.length - 1]);
-            return namePart.replace("-", "%23").replace(/\s+/g, "+");
-          } catch {
-            return null;
-          }
-        })
-        .filter(Boolean);
-      if (summoners.length === 0) return "https://www.op.gg/";
-      return `https://www.op.gg/lol/multisearch/na?summoners=${summoners.join("%2C")}`;
-    };
-
     const joinRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("join").setLabel("✅ Join Queue").setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId("leave").setLabel("🚪 Leave Queue").setStyle(ButtonStyle.Danger),
@@ -1604,6 +1634,7 @@ async function updateQueueMessage() {
     });
   }, 250);
 }
+// Helper Functions
 
 // Helper function to update match message with vote display
 // Handle role assignment with existing roles
@@ -2378,7 +2409,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       try {
-        // LOCK THE QUEUE
+        // LOCK THE QUEUE - CRITICAL FIX
         queueLock = true;
         
         // Double-check queue status after lock
@@ -2387,7 +2418,7 @@ client.on("interactionCreate", async (interaction) => {
           return interaction.reply({ content: "⚠️ You're already in the queue.", ephemeral: true });
         }
 
-        // Atomic Queue Size Check
+        // Atomic Queue Size Check - FIXED
         if (queue.length >= QUEUE_SIZE) {
           queueLock = false;
           return interaction.reply({ 
@@ -2396,9 +2427,12 @@ client.on("interactionCreate", async (interaction) => {
           });
         }
 
+        // Add to queue
         queue.push(id);
         saveData();
-        await updateQueueMessage();
+        
+        // Get current queue length BEFORE unlocking
+        const currentQueueLength = queue.length;
         
         // Send role confirmation message
         const roleDisplay = player.roles.map((role, index) => {
@@ -2409,7 +2443,7 @@ client.on("interactionCreate", async (interaction) => {
 
         const roleConfirmationEmbed = new EmbedBuilder()
           .setTitle("✅ Joined Queue Successfully")
-          .setDescription(`You have been added to the queue!\n\n**Your Current Role Preferences:**\n${roleDisplay}\n\n*Queue position: ${queue.length}/${QUEUE_SIZE}*`)
+          .setDescription(`You have been added to the queue!\n\n**Your Current Role Preferences:**\n${roleDisplay}\n\n*Queue position: ${currentQueueLength}/${QUEUE_SIZE}*`)
           .setColor(0x00FF00)
           .setFooter({ text: "Use 'Change Roles' button to modify your preferences" });
 
@@ -2418,13 +2452,20 @@ client.on("interactionCreate", async (interaction) => {
           ephemeral: true
         });
         
-        // Strict Ready Check Trigger
-        if (queue.length === QUEUE_SIZE && !activeReadyCheck) {
+        // Update queue message
+        await updateQueueMessage();
+        
+        // CRITICAL FIX: Check queue length AFTER all operations but BEFORE unlocking
+        // This prevents the race condition where someone leaves right after joining
+        if (currentQueueLength === QUEUE_SIZE && !activeReadyCheck) {
+          console.log(`🚨 Queue reached ${QUEUE_SIZE}, starting ready check...`);
           await startReadyCheck(interaction.channel);
         }
         
+      } catch (error) {
+        console.error("Error in join queue:", error);
       } finally {
-        // UNLOCK THE QUEUE
+        // UNLOCK THE QUEUE - Always execute
         queueLock = false;
       }
     }
@@ -2495,6 +2536,9 @@ client.on("interactionCreate", async (interaction) => {
 
     // --- Leave Queue ---
     else if (interaction.customId === "leave") {
+      const id = interaction.user.id;
+      
+      // Check if user is actually in queue first
       if (!queue.includes(id)) {
         try {
           await interaction.deferUpdate();
@@ -2504,6 +2548,18 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      // CRITICAL: Prevent leaving when queue is full (10 players)
+      if (queue.length === QUEUE_SIZE) {
+        return interaction.reply({
+          content: "❌ You cannot leave the queue when it's full. A ready check has started - please respond to the ready check instead.",
+          ephemeral: true
+        });
+      }
+
+      // Store whether we're leaving during an active ready check
+      const wasDuringReadyCheck = activeReadyCheck !== null;
+      
+      // Remove player from queue
       queue = queue.filter((x) => x !== id);
       
       // If player has duo partner in queue, remove them too
@@ -2518,12 +2574,37 @@ client.on("interactionCreate", async (interaction) => {
       saveData();
       await updateQueueMessage();
 
-      try {
-        await interaction.deferUpdate();
-      } catch (err) {
-        if (err.code !== 10062) console.error("Leave deferUpdate failed:", err);
+      // Apply timeout if leaving during active ready check (shouldn't happen now, but just in case)
+      if (wasDuringReadyCheck && activeReadyCheck) {
+        console.log(`🚨 Player ${id} left during active ready check, stopping ready check`);
+        
+        const timeoutInfo = addTimeoutOffense(id);
+        const timeoutStatus = isUserInTimeout(id);
+        const timeLeft = formatTimeLeft(timeoutStatus.timeLeft);
+        
+        await interaction.reply({
+          content: `❌ You have left during ready check and received a timeout penalty. You cannot queue for ${timeLeft}.`,
+          ephemeral: true,
+        });
+        
+        await interaction.channel.send({
+          content: `⚠️ <@${id}> left during ready check and received a timeout penalty (${timeoutInfo.offenses} offense${timeoutInfo.offenses > 1 ? 's' : ''}) - cannot queue for ${timeLeft}`
+        });
+        
+        // Stop the ready check collector with "declined" reason
+        if (activeReadyCheck.collector) {
+          activeReadyCheck.collector.stop("declined");
+        }
+        
+      } else {
+        // Normal leave behavior (not during ready check)
+        try {
+          await interaction.deferUpdate();
+        } catch (err) {
+          if (err.code !== 10062) console.error("Leave deferUpdate failed:", err);
+        }
       }
-  }
+    }
 
     // --- Multi OP.GG ---
     else if (interaction.customId === "opgg") {
@@ -4133,44 +4214,46 @@ client.on("messageCreate", async (message) => {
     await message.channel.send("✅ Force reset all timeouts. Weekly reset scheduled.");
   }
 
-  // ---------------- !forceready ----------------
   if (cmd === "!forceready") {
-  if (!message.member.permissions.has("ManageGuild")) {
-    return message.reply("❌ Only staff members can use this command.");
-  }
-
-  if (!queue || queue.length < QUEUE_SIZE) {
-    return message.reply("⚠️ There isn't an active ready check right now.");
-  }
-
-  message.channel.send("✅ Force-ready activated — all players are now marked ready!");
-
-  // If there's an active ready-check, stop its collector so the existing
-  // end-handler runs (it will call makeTeams). This avoids duplicate calls.
-  if (activeReadyCheck && activeReadyCheck.collector) {
-    try {
-      // Optionally edit the message for immediate feedback and remove buttons
-      const curMsg = activeReadyCheck.msg;
-      try {
-        const infoEmbed = EmbedBuilder.from(curMsg.embeds?.[0] || embed)
-          .setDescription("✅ Force-ready activated by staff. Match is starting!")
-          .setColor(0x00ff00);
-        await curMsg.edit({ embeds: [infoEmbed], components: [] }).catch(() => {});
-      } catch (e) { /* ignore UI edit errors */ }
-
-      // Stop collector — use same reason as normal "all_ready" path
-      activeReadyCheck.collector.stop("all_ready");
-      // don't call makeTeams() here — collector.on('end') will do it.
-    } catch (err) {
-      console.error("Error stopping active ready check:", err);
-      // fallback: if something went wrong and no collector, call makeTeams
-      await makeTeams(message.channel);
+    if (!message.member.permissions.has("ManageGuild")) {
+      return message.reply("❌ Only staff members can use this command.");
     }
-  } else {
-    // No active ready-check object (maybe message not cached) — fallback:
-    await makeTeams(message.channel);
+
+    // Check if there's an active ready check
+    if (!activeReadyCheck) {
+      // Check if queue is full and we can start a ready check
+      if (queue.length === QUEUE_SIZE) {
+        await message.channel.send("🔄 Starting ready check and forcing it immediately...");
+        await startReadyCheck(message.channel);
+        
+        // Small delay to ensure ready check is set up, then force it
+        setTimeout(async () => {
+          if (activeReadyCheck && activeReadyCheck.collector) {
+            activeReadyCheck.collector.stop("all_ready");
+            await message.channel.send("✅ Force-ready completed!");
+          }
+        }, 1000);
+      } else {
+        await message.reply(`⚠️ No active ready check and queue has ${queue.length}/${QUEUE_SIZE} players. Need exactly ${QUEUE_SIZE} players.`);
+      }
+      return;
+    }
+
+    // If there's an active ready check, force it to proceed
+    await message.channel.send("✅ Force-ready activated — match starting!");
+
+    if (activeReadyCheck.collector) {
+      // Stop the collector which will trigger the end handler and start the match
+      activeReadyCheck.collector.stop("all_ready");
+    } else {
+      // Fallback: if no collector, start the match directly with the ready check participants
+      if (activeReadyCheck.participants) {
+        await makeTeams(message.channel);
+      } else {
+        await message.reply("❌ Could not force ready check - no participants data available.");
+      }
+    }
   }
-}
 
   // ---------------- !queueban (with duration) ----------------
   if (cmd === "!queueban") {
@@ -4475,32 +4558,40 @@ client.on("messageCreate", async (message) => {
 
   // ---------------- !duobreak (for normal queue) ----------------
   if (cmd === "!duobreak") {
-    const playerId = message.author.id;
-    const player = ensurePlayer(playerId);
+      const playerId = message.author.id;
+      const player = ensurePlayer(playerId);
 
-    if (!player.duoPartner) {
-      return message.reply("❌ You are not in a duo partnership for normal queue.");
-    }
+      if (!player.duoPartner) {
+          return message.reply("❌ You are not in a duo partnership for normal queue.");
+      }
 
-    const partnerId = player.duoPartner;
-    const partner = ensurePlayer(partnerId);
+      const partnerId = player.duoPartner;
+      const partner = ensurePlayer(partnerId);
 
-    // Remove from queue if either is queued
-    if (queue.includes(playerId)) {
-      queue = queue.filter(id => id !== playerId);
-    }
-    if (queue.includes(partnerId)) {
-      queue = queue.filter(id => id !== partnerId);
-    }
+      // Only break the duo partnership, DON'T remove from queue
+      // Store whether players were in queue for the message
+      const wasInQueue1 = queue.includes(playerId);
+      const wasInQueue2 = queue.includes(partnerId);
 
-    // Break the duo
-    player.duoPartner = null;
-    partner.duoPartner = null;
-    
-    saveData();
-    await updateQueueMessage();
+      // Break the duo partnership
+      player.duoPartner = null;
+      partner.duoPartner = null;
+      
+      saveData();
+      await updateQueueMessage();
 
-    await message.reply(`✅ Duo partnership with <@${partnerId}> has been dissolved for normal queue.`);
+      let response = `✅ Duo partnership with <@${partnerId}> has been dissolved for normal queue.`;
+      
+      // Add queue status information
+      if (wasInQueue1 && wasInQueue2) {
+          response += `\n⚠️ Both you and your former partner remain in the queue as solo players.`;
+      } else if (wasInQueue1) {
+          response += `\nℹ️ You remain in the queue as a solo player.`;
+      } else if (wasInQueue2) {
+          response += `\nℹ️ Your former partner remains in the queue as a solo player.`;
+      }
+
+      await message.reply(response);
   }
 
   // ---------------- !duostatus (for normal queue) ----------------
@@ -5629,18 +5720,18 @@ console.log(`📁 Found categories: ${presetCategories.map(c => `Match ${c.numbe
     permissionOverwrites: [
       {
         id: guild.id, // @everyone
-        deny: ['ViewChannel']
+        allow: ['ViewChannel']
       },
       // Allow match participants to view and send messages
       ...bestTeam1.map(playerId => ({
         id: playerId,
         type: 1,
-        deny: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
+        allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
       })),
       ...bestTeam2.map(playerId => ({
         id: playerId,
         type: 1,
-        deny: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
+        allow: ['ViewChannel', 'SendMessages', 'ReadMessageHistory'],
       }))
     ]
   });
